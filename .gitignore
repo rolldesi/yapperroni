@@ -1,0 +1,13 @@
+# whisper.cpp checkout and its build output — fetched by build.sh
+vendor-whisper/
+
+# GGML weights, 181 MB, downloaded by build.sh
+models/
+*.bin
+
+# Build products
+.build/
+dist/
+*.dmg
+
+.DS_Store

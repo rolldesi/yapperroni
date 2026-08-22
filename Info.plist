@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleName</key>            <string>Yapperroni</string>
+    <key>CFBundleDisplayName</key>     <string>Yapperroni</string>
+    <key>CFBundleExecutable</key>      <string>Yapperroni</string>
+    <key>CFBundleIdentifier</key>      <string>com.rahuldesai.yapperroni</string>
+    <key>CFBundlePackageType</key>     <string>APPL</string>
+    <key>CFBundleShortVersionString</key> <string>1.0</string>
+    <key>CFBundleVersion</key>         <string>1</string>
+    <key>LSMinimumSystemVersion</key>  <string>26.0</string>
+
+    <!-- Menu-bar only: no Dock icon, no app switcher entry. -->
+    <key>LSUIElement</key>             <true/>
+
+    <key>NSMicrophoneUsageDescription</key>
+    <string>Yapperroni records your voice while you hold the dictation key and transcribes it on this Mac.</string>
+    <key>NSAppleEventsUsageDescription</key>
+    <string>Yapperroni pastes transcribed text into the app you were using.</string>
+</dict>
+</plist>
