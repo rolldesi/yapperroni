@@ -4,7 +4,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 W="$ROOT/vendor-whisper"
 B="$W/build-mac"
-APP="$HOME/Applications/Yapperroni.app"
+APP="${YAPPERRONI_INSTALL_DIR:-/Applications}/Yapperroni.app"
 BUNDLE_ID="com.rahuldesai.yapperroni"
 SUPPORT="$HOME/Library/Application Support/Yapperroni"
 MODEL="ggml-small.en-q5_1.bin"
@@ -40,6 +40,14 @@ if [ ! -f "$ROOT/models/$MODEL" ]; then
   curl -L --fail --progress-bar \
     -o "$ROOT/models/$MODEL" \
     "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/$MODEL"
+fi
+
+# Rebuild the .icns whenever the artwork changes.
+if [ -f "$ROOT/assets/icon.png" ]; then
+  if [ ! -f "$ROOT/assets/Yapperroni.icns" ] || \
+     [ "$ROOT/assets/icon.png" -nt "$ROOT/assets/Yapperroni.icns" ]; then
+    "$ROOT/make-icon.sh"
+  fi
 fi
 
 # --- stable code signing identity -------------------------------------------
@@ -128,6 +136,9 @@ rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BIN" "$APP/Contents/MacOS/Yapperroni"
 cp "$ROOT/Info.plist" "$APP/Contents/Info.plist"
+if [ -f "$ROOT/assets/Yapperroni.icns" ]; then
+  cp "$ROOT/assets/Yapperroni.icns" "$APP/Contents/Resources/Yapperroni.icns"
+fi
 printf 'APPL????' > "$APP/Contents/PkgInfo"
 
 # The model ships inside the bundle so the app is self-contained and can be
@@ -156,6 +167,7 @@ codesign --force --deep \
 codesign --verify --strict "$APP" 2>&1 | sed 's/^/    /' \
   && echo "    signature verified"
 
+touch "$APP"
 echo
 echo "built: $APP"
 echo "run:   open '$APP'"

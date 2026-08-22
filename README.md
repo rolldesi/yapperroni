@@ -14,15 +14,40 @@ rewriting, no "AI features". It types what you said.
 an M5. The model is loaded once at launch and stays resident, so there is no
 per-utterance load cost.
 
+## Install
+
+Open `Yapperroni.dmg`, drag Yapperroni into Applications, launch it from
+Applications or Spotlight. Ordinary sideloaded Mac app — no App Store, no
+installer script.
+
+Grant two permissions on first launch: **Microphone** (prompted) and
+**Accessibility** (System Settings → Privacy & Security → Accessibility), the
+latter for the hotkey and pasting. Quit and reopen after granting.
+
 ## Build
 
 Requires macOS on Apple Silicon, Xcode command line tools, and `cmake`
 (`brew install cmake`).
 
 ```bash
-./build.sh        # compile and install to ~/Applications
+./build.sh        # compile, sign, install to /Applications
 ./make-dmg.sh     # build, then package dist/Yapperroni-<version>.dmg
 ```
+
+`YAPPERRONI_INSTALL_DIR=~/Applications ./build.sh` installs elsewhere. Note
+that `~/Applications` does **not** appear under the Finder sidebar's
+Applications shortcut, which makes the app look like it never installed —
+`/Applications` is the default for that reason.
+
+### App icon
+
+Replace `assets/icon.png` with a square PNG (1024×1024 ideal) and run
+`./build.sh`. It regenerates `assets/Yapperroni.icns` through `make-icon.sh`
+whenever the source art is newer, and copies it into the bundle. The committed
+icon is a placeholder.
+
+Finder and the Dock cache icons hard; `build.sh` touches the bundle to nudge
+them. If a stale icon persists, `killall Dock`.
 
 The first build clones whisper.cpp, compiles it with Metal, and downloads the
 181 MB model. Neither is in this repo. Later builds skip all of that and take
@@ -31,12 +56,18 @@ a few seconds.
 The model ends up inside the app bundle, so the built `.app` and the DMG are
 self-contained — nothing to download at install time.
 
-### Yapperroni has no Dock icon
+### It lives in the menu bar
 
-It is a menu-bar app: look for the **mic icon in the menu bar**, not the Dock.
-On first launch it opens its window so you can see it started; after that it
-stays out of the way. Double-clicking Yapperroni in Finder any time reopens the
-window.
+Yapperroni is a normal application — it installs to `/Applications`, launches
+from Spotlight or Launchpad, and has its own icon. It simply has no permanent
+Dock presence, because a dictation tool you invoke by holding a key does not
+need one.
+
+Look for the **mic icon in the menu bar**. On first launch it opens its window
+so you can see it started; after that it stays out of the way. Double-clicking
+it in Finder, or Open Flow from the menu bar, reopens the window. While the
+window is open it takes a Dock icon like any other app, and gives it back when
+you close it.
 
 Grant two permissions on first launch:
 
@@ -160,8 +191,10 @@ Sources/
   Views.swift      SwiftUI history, settings and stats
   App.swift        menu bar, wiring, dictation lifecycle
   main.swift       self-test modes + app entry
-build.sh           signing identity, compile, bundle, install
-make-dmg.sh        package the installed app as a DMG
+build.sh           bootstrap deps, icon, compile, sign, install
+make-icon.sh       assets/icon.png -> multi-resolution .icns
+make-dmg.sh        build, then package a styled drag-to-install DMG
+assets/            app icon source and DMG background
 vendor-whisper/    whisper.cpp checkout + static build
 models/            downloaded GGML weights
 ```
@@ -267,9 +300,15 @@ wins — do not change the mask to chase the selftest.
 
 ## Distribution
 
-`make-dmg.sh` produces `dist/Yapperroni-<version>.dmg` — the app plus an
-`/Applications` alias, about 179 MB (mostly the model; it is already quantized
-and does not compress further).
+`make-dmg.sh` produces `dist/Yapperroni-<version>.dmg` — about 176 MB, mostly
+the model, which is already quantized and does not compress further.
+
+It is the conventional drag-to-install window: app on the left, `/Applications`
+alias on the right, arrow between them, on a retina background. That layout is
+written by mounting a read-write image, scripting Finder to set the window
+bounds, icon size and positions, then converting to a compressed read-only
+image. It needs a GUI session; in a headless build the styling step is skipped
+and the DMG still works, just unstyled.
 
 The app is **self-signed, not notarized**. That is fine on this Mac: a locally
 built DMG carries no quarantine flag. Handing it to someone else is a different
