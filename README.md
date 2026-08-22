@@ -18,7 +18,9 @@ per-utterance load cost.
 
 Requires an Apple Silicon Mac (M1 or later) on macOS 26 or newer.
 
-1. Download `Yapperroni-1.0.dmg` and open it.
+1. Download `Yapperroni-1.0.dmg` from the
+   [latest release](https://github.com/rolldesi/yapperroni/releases/latest)
+   and open it.
 2. Drag **Yapperroni** onto the **Applications** shortcut.
 3. Eject the disk image, then launch Yapperroni from Applications, Spotlight or
    Launchpad.
