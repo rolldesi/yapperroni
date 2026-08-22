@@ -109,6 +109,7 @@ swiftc \
   "$ROOT/Sources/History.swift" \
   "$ROOT/Sources/MainWindow.swift" \
   "$ROOT/Sources/Views.swift" \
+  "$ROOT/Sources/Welcome.swift" \
   "$ROOT/Sources/Whisper.swift" \
   "$ROOT/Sources/Recorder.swift" \
   "$ROOT/Sources/Hotkey.swift" \

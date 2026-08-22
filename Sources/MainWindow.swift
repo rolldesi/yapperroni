@@ -111,5 +111,7 @@ final class AppState: ObservableObject {
     @Published var lastError: String?
     /// True while the recorder owns the input node.
     @Published var dictating = false
+    /// First-run permission and privacy screen, shown instead of the sidebar.
+    @Published var showWelcome = false
     private init() {}
 }

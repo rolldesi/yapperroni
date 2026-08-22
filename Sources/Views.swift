@@ -5,6 +5,14 @@ struct ContentView: View {
     @ObservedObject private var state = AppState.shared
 
     var body: some View {
+        if state.showWelcome {
+            WelcomeView()
+        } else {
+            main
+        }
+    }
+
+    private var main: some View {
         NavigationSplitView {
             List(Section.allCases, selection: Binding(
                 get: { state.section },

@@ -16,13 +16,64 @@ per-utterance load cost.
 
 ## Install
 
-Open `Yapperroni.dmg`, drag Yapperroni into Applications, launch it from
-Applications or Spotlight. Ordinary sideloaded Mac app — no App Store, no
-installer script.
+Requires an Apple Silicon Mac (M1 or later) on macOS 26 or newer.
 
-Grant two permissions on first launch: **Microphone** (prompted) and
-**Accessibility** (System Settings → Privacy & Security → Accessibility), the
-latter for the hotkey and pasting. Quit and reopen after granting.
+1. Download `Yapperroni-1.0.dmg` and open it.
+2. Drag **Yapperroni** onto the **Applications** shortcut.
+3. Eject the disk image, then launch Yapperroni from Applications, Spotlight or
+   Launchpad.
+4. A welcome screen explains the two permissions it needs and why. Grant them
+   from there.
+5. **Quit and reopen Yapperroni** after granting Accessibility — the shortcut
+   only becomes live on a fresh launch.
+
+Then hold **Right ⌥**, say something, and let go.
+
+### If macOS refuses to open it
+
+Release builds are signed but not notarized by Apple, so a copy that has been
+*downloaded* carries a quarantine flag and Gatekeeper blocks it. Either build
+from source (below), or clear the flag deliberately:
+
+```bash
+xattr -dr com.apple.quarantine /Applications/Yapperroni.app
+```
+
+Only do that for a build you trust. A DMG you built yourself on this machine
+has no quarantine flag and needs none of this.
+
+### The two permissions
+
+| | Why |
+|---|---|
+| **Microphone** | To hear you while you dictate. macOS shows the orange recording dot whenever it is live. |
+| **Accessibility** | To notice your shortcut while another app is focused, and to paste the result into it. |
+
+Accessibility is the one that sounds alarming. Yapperroni does not read other
+applications and does not log what you type: the key tap inspects the key code
+and ignores every event that is not your shortcut. See [PRIVACY.md](PRIVACY.md),
+or read `Sources/Hotkey.swift` — it is about 200 lines.
+
+### Uninstall
+
+```bash
+rm -rf /Applications/Yapperroni.app
+rm -rf ~/Library/Application\ Support/Yapperroni    # history, log, models
+defaults delete com.rahuldesai.yapperroni            # settings
+```
+
+Also remove Yapperroni from System Settings → Privacy & Security →
+Accessibility and → Microphone.
+
+## Privacy
+
+Your voice never leaves your Mac. No account, no server, no analytics, no
+networking code at all. Audio lives in memory while you speak and is discarded
+once it becomes text — it is never written to disk or transmitted.
+
+Transcribed **text** is kept in `~/Library/Application Support/Yapperroni/history.json`
+so you can search it. That is opt-out, from the welcome screen or Settings →
+History. Full detail in [PRIVACY.md](PRIVACY.md).
 
 ## Build
 
@@ -189,6 +240,7 @@ Sources/
   HUD.swift        non-activating NSPanel status pill
   MainWindow.swift window, activation policy, main menu
   Views.swift      SwiftUI history, settings and stats
+  Welcome.swift    first-run permissions and privacy screen
   App.swift        menu bar, wiring, dictation lifecycle
   main.swift       self-test modes + app entry
 build.sh           bootstrap deps, icon, compile, sign, install
@@ -316,6 +368,15 @@ matter — once it has been downloaded, Gatekeeper blocks it, and on recent macO
 the right-click-Open bypass is no longer reliable for unnotarized apps. That
 needs a $99 Apple Developer ID and notarization; no change to the packaging
 fixes it.
+
+## License
+
+[MIT](LICENSE). Copyright (c) 2026 Rahul Desai.
+
+Built on whisper.cpp and OpenAI's Whisper weights, both MIT — see
+[THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md). The model ships inside the
+app bundle and is therefore redistributed in release DMGs, which its license
+permits.
 
 ## Known ceilings
 

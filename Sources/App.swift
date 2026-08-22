@@ -41,9 +41,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         buildStatusItem()
 
         loadModel()
-        requestMicrophone()
+        if UserDefaults.standard.bool(forKey: "hasLaunchedBefore") { requestMicrophone() }
 
-        state.accessibilityGranted = Hotkey.requestAccessibility(prompt: true)
+        state.accessibilityGranted = Hotkey.requestAccessibility(
+            prompt: UserDefaults.standard.bool(forKey: "hasLaunchedBefore"))
         startHotkey()
 
         hotkey.onActivate   = { [weak self] src in self?.beginDictation(src) }
@@ -69,10 +70,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let name = arg.split(separator: "=").last.map(String.init) ?? ""
             MainWindow.shared.show(section: Section(rawValue: name) ?? .history)
         } else if !UserDefaults.standard.bool(forKey: "hasLaunchedBefore") {
-            // Yapperroni has no Dock icon and opens no window, so a first launch with
-            // nothing on screen reads as "it didn't start". Show it once.
+            // Yapperroni has no Dock icon and opens no window, so a first launch
+            // with nothing on screen reads as "it didn't start". Show what it
+            // needs and why, before macOS throws its own permission dialogs.
             UserDefaults.standard.set(true, forKey: "hasLaunchedBefore")
-            MainWindow.shared.show(section: .settings)
+            state.showWelcome = true
+            MainWindow.shared.show(section: .history)
         }
 
         Log.write("launch  accessibility=\(state.accessibilityGranted) tap=\(hotkey.isActive) "
