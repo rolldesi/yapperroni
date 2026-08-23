@@ -72,6 +72,21 @@ final class Settings: ObservableObject {
             hotkeyChanged.send()
         }
     }
+    /// Quick-add combo. Consumed like the lock, so it needs a modifier.
+    @Published var vocabBinding: KeyBinding {
+        didSet {
+            guard vocabBinding != oldValue else { return }
+            if let data = try? JSONEncoder().encode(vocabBinding) { d.set(data, forKey: "vocabBinding") }
+            hotkeyChanged.send()
+        }
+    }
+    @Published var vocabEnabled: Bool {
+        didSet {
+            guard vocabEnabled != oldValue else { return }
+            d.set(vocabEnabled, forKey: "vocabEnabled")
+            hotkeyChanged.send()
+        }
+    }
     @Published var lockEnabled: Bool {
         didSet {
             guard lockEnabled != oldValue else { return }
@@ -171,6 +186,7 @@ final class Settings: ObservableObject {
             "customVocabulary": "",
             "soundFeedback": false,
             "lockEnabled": true,
+            "vocabEnabled": true,
             "liveTranscription": true,
             "historyEnabled": true,
             "historyLimit": 500,
@@ -182,6 +198,8 @@ final class Settings: ObservableObject {
         binding     = Settings.decodeBinding(d.data(forKey: "binding"), "binding", .pushDefault)
         lockBinding = Settings.decodeBinding(d.data(forKey: "lockBinding"), "lockBinding", .lockDefault)
         lockEnabled = d.bool(forKey: "lockEnabled")
+        vocabBinding = Settings.decodeBinding(d.data(forKey: "vocabBinding"), "vocabBinding", .vocabDefault)
+        vocabEnabled = d.bool(forKey: "vocabEnabled")
         liveTranscription = d.bool(forKey: "liveTranscription")
         activation       = ActivationMode(rawValue: d.string(forKey: "activation") ?? "") ?? .hold
         output           = OutputMode(rawValue: d.string(forKey: "output") ?? "") ?? .paste
@@ -254,6 +272,8 @@ final class Settings: ObservableObject {
         binding          = .pushDefault
         lockBinding      = .lockDefault
         lockEnabled      = true
+        vocabBinding     = .vocabDefault
+        vocabEnabled     = true
         liveTranscription = true
         activation       = .hold
         output           = .paste

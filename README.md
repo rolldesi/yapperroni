@@ -60,6 +60,21 @@ It does condition on an initial prompt, so Settings → Vocabulary takes a list
 of names and jargon and feeds them in as a glossary. Capped at ~380 characters:
 the prompt competes with your audio for the decoder's attention.
 
+The list is **comma separated** — `gooning, codex, whisper.cpp`. Newlines work
+too, so a list pasted from anywhere is fine. Settings shows the parsed terms
+back underneath the field, so a wrong separator is obvious rather than silently
+producing one long "word".
+
+### Adding a word without stopping
+
+Press **⌥R** anywhere and a small window opens on top of whatever you are doing.
+Type the word, press Return, type another — it stays open until Escape, then
+hands keyboard focus back to the app you came from. Rebindable in Settings →
+Shortcuts, and swallowed like the lock combo so it never types an `r`.
+
+Duplicates are rejected case-insensitively, so mashing the shortcut after a bad
+transcription is harmless.
+
 The other lever is the model. `large-v3-turbo` is from 2024 and much better at
 proper nouns, at roughly twice the latency — drop the `.bin` in the support
 folder and pick it in Settings → Model.
@@ -293,6 +308,7 @@ $APP --selftest-whisper vendor-whisper/samples/jfk.wav   # model + decode
 $APP --selftest-audio                                     # mic + 16 kHz resample
 $APP --selftest-hotkey                                    # bound modifier's bit mask, no permissions needed
 $APP --selftest-toggle                                    # hold/toggle state machine, incl. rejected presses
+$APP --selftest-vocab                                     # vocabulary separators, de-duplication, prompt cap
 $APP --selftest-streaming vendor-whisper/samples/jfk.wav  # words emerging in simulated real time
 ```
 
@@ -329,6 +345,8 @@ Sources/
   Whisper.swift    whisper.cpp wrapper; context loaded once, reused
   Streaming.swift  live transcription: re-transcribe, commit settled words
   Cleanup.swift    optional LLM rewrite pass; local, Claude, OpenAI, Gemini, Groq
+  Vocabulary.swift word-list parsing, de-duplication, glossary prompt
+  VocabWindow.swift  quick-add panel on the global shortcut
   Keychain.swift   API keys in the login Keychain, never in settings
   Recorder.swift   AVAudioEngine capture + AVAudioConverter to 16 kHz mono
   Hotkey.swift     listen-only CGEventTap; any modifier or F-key, hold or toggle

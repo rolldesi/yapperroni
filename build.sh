@@ -106,10 +106,12 @@ swiftc \
   "$ROOT/Sources/KeyBinding.swift" \
   "$ROOT/Sources/Keychain.swift" \
   "$ROOT/Sources/Cleanup.swift" \
+  "$ROOT/Sources/Vocabulary.swift" \
   "$ROOT/Sources/Settings.swift" \
   "$ROOT/Sources/KeyRecorder.swift" \
   "$ROOT/Sources/History.swift" \
   "$ROOT/Sources/MainWindow.swift" \
+  "$ROOT/Sources/VocabWindow.swift" \
   "$ROOT/Sources/Views.swift" \
   "$ROOT/Sources/Welcome.swift" \
   "$ROOT/Sources/Whisper.swift" \

@@ -64,20 +64,27 @@ final class Hotkey {
     private var push: KeyBinding = .pushDefault
     private var lock: KeyBinding = .lockDefault
     private var lockEnabled = true
+    private var vocab: KeyBinding = .vocabDefault
+    private var vocabEnabled = true
     private var mode: ActivationMode = .hold
 
     var onActivate: ((Source) -> Void)?
     var onDeactivate: ((Source) -> Void)?
+    /// Fired by the quick-add combo. Not a dictation event — it opens a window.
+    var onVocab: (() -> Void)?
 
     private(set) var isActive = false
     var isLocked: Bool { state.locked }
 
     @discardableResult
-    func start(push: KeyBinding, lock: KeyBinding, lockEnabled: Bool, mode: ActivationMode) -> Bool {
+    func start(push: KeyBinding, lock: KeyBinding, lockEnabled: Bool,
+               vocab: KeyBinding, vocabEnabled: Bool, mode: ActivationMode) -> Bool {
         stop()
         self.push = push
         self.lock = lock
         self.lockEnabled = lockEnabled
+        self.vocab = vocab
+        self.vocabEnabled = vocabEnabled
         self.mode = mode
         holdIsDown = false
         state = State()
@@ -153,6 +160,15 @@ final class Hotkey {
                 emit(Hotkey.decide(.lockPress, mode: mode, state: &state), .lock)
             }
             // Swallow the keyUp too, or the focused app sees an orphaned release.
+            return type == .keyDown || type == .keyUp
+        }
+
+        // Quick-add combo: same swallow rule as the lock — ⌥R would otherwise
+        // also type into whatever is focused.
+        if vocabEnabled, vocab.kind == .combo, vocab.matches(keyCode: code, flags: flags) {
+            if type == .keyDown, event.getIntegerValueField(.keyboardEventAutorepeat) == 0 {
+                DispatchQueue.main.async { [weak self] in self?.onVocab?() }
+            }
             return type == .keyDown || type == .keyUp
         }
 

@@ -44,6 +44,10 @@ struct KeyBinding: Codable, Equatable, Hashable {
     static let lockDefault = KeyBinding(keyCode: 49, deviceMask: 0,
                                         modifierFlags: CGEventFlags.maskAlternate.rawValue,
                                         kind: .combo)
+    /// ⌥R — quick-add to the vocabulary list.
+    static let vocabDefault = KeyBinding(keyCode: 15, deviceMask: 0,
+                                         modifierFlags: CGEventFlags.maskAlternate.rawValue,
+                                         kind: .combo)
 
     var isModifier: Bool { kind == .bareModifier }
     /// Only combos are swallowed; everything else passes through to the app.

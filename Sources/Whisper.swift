@@ -33,24 +33,9 @@ final class Whisper {
     /// Whisper has no word list to update — it is end-to-end, and its sense of
     /// which words exist comes from training data that predates the model's
     /// release. It does, however, condition on an initial prompt, so naming
-    /// your jargon there biases the decoder toward it. Kept short: the prompt
-    /// competes with the audio for the decoder's context.
+    /// your jargon there biases the decoder toward it.
     private static func promptText() -> String? {
-        let raw = Settings.shared.customVocabulary.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !raw.isEmpty else { return nil }
-        let terms = raw
-            .split(whereSeparator: { $0 == "\n" || $0 == "," })
-            .map { $0.trimmingCharacters(in: .whitespaces) }
-            .filter { !$0.isEmpty }
-        guard !terms.isEmpty else { return nil }
-        // Cap it: the prompt shares the decoder's context with the audio, and
-        // an overlong glossary starts costing accuracy instead of adding it.
-        var out = "Glossary: "
-        for t in terms {
-            if out.count + t.count > 380 { break }
-            out += t + ", "
-        }
-        return out.hasSuffix(", ") ? String(out.dropLast(2)) + "." : out
+        Vocabulary.prompt(Settings.shared.customVocabulary)
     }
 
     /// Blocking. `samples` must be 16 kHz mono float32 in [-1, 1].

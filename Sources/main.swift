@@ -352,6 +352,55 @@ func selftestAlign() -> Never {
     exit(failures == 0 ? 0 : 1)
 }
 
+/// Vocabulary parsing: the separator rules and the de-duplication that the
+/// quick-add window depends on.
+func selftestVocab() -> Never {
+    var failures = 0
+    func eq(_ what: String, _ got: [String], _ want: [String]) {
+        let ok = got == want
+        if !ok { failures += 1 }
+        print("  \(ok ? "ok  " : "FAIL") \(what)")
+        if !ok { print("        got \(got)\n       want \(want)") }
+    }
+    func eqs(_ what: String, _ got: String?, _ want: String?) {
+        let ok = got == want
+        if !ok { failures += 1 }
+        print("  \(ok ? "ok  " : "FAIL") \(what)")
+        if !ok { print("        got \(got ?? "nil")\n       want \(want ?? "nil")") }
+    }
+
+    print("separators:")
+    eq("comma separated", Vocabulary.terms("gooning, codex, Yapperroni"),
+       ["gooning", "codex", "Yapperroni"])
+    eq("no spaces after commas", Vocabulary.terms("a,b,c"), ["a", "b", "c"])
+    eq("newline separated", Vocabulary.terms("a\nb\nc"), ["a", "b", "c"])
+    eq("mixed, as pasted from anywhere", Vocabulary.terms("a, b\nc,d"), ["a", "b", "c", "d"])
+    eq("empties and stray commas dropped", Vocabulary.terms(" , a ,, b , "), ["a", "b"])
+    eq("multi-word phrases survive", Vocabulary.terms("ice cream, whisper.cpp"),
+       ["ice cream", "whisper.cpp"])
+    eq("empty input", Vocabulary.terms("   "), [])
+
+    print("adding:")
+    eqs("appends comma separated", Vocabulary.adding("codex", to: "a, b"), "a, b, codex")
+    eqs("first term", Vocabulary.adding("codex", to: ""), "codex")
+    eqs("duplicate rejected", Vocabulary.adding("codex", to: "a, codex"), nil)
+    eqs("duplicate is case-insensitive", Vocabulary.adding("CODEX", to: "a, codex"), nil)
+    eqs("blank rejected", Vocabulary.adding("   ", to: "a"), nil)
+    eqs("normalises a newline list on append",
+        Vocabulary.adding("c", to: "a\nb"), "a, b, c")
+
+    print("prompt:")
+    eqs("nil when empty", Vocabulary.prompt("  "), nil)
+    eqs("glossary form", Vocabulary.prompt("a, b"), "Glossary: a, b.")
+    let long = Vocabulary.prompt(Array(repeating: "abcdefghij", count: 200).joined(separator: ", "))
+    let capped = (long?.count ?? 0) < 420
+    if !capped { failures += 1 }
+    print("  \(capped ? "ok  " : "FAIL") long list is capped (\(long?.count ?? 0) chars)")
+
+    print(failures == 0 ? "PASS" : "FAIL: \(failures) case(s)")
+    exit(failures == 0 ? 0 : 1)
+}
+
 let args = CommandLine.arguments
 switch args.dropFirst().first {
 case "--selftest-whisper":
@@ -365,6 +414,8 @@ case "--selftest-toggle":
     selftestToggle()
 case "--selftest-align":
     selftestAlign()
+case "--selftest-vocab":
+    selftestVocab()
 case "--selftest-streaming":
     guard args.count > 2 else { print("usage: yapperroni --selftest-streaming <file.wav>"); exit(2) }
     selftestStreaming(args[2])

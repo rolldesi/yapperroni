@@ -11,6 +11,8 @@ final class MainWindow: NSObject, NSWindowDelegate {
     static let shared = MainWindow()
     private var window: NSWindow?
 
+    var isVisible: Bool { window?.isVisible == true }
+
     /// Shows the window. `reason` is logged: this app is a background tool
     /// first, so an unexplained window appearing over the user's work is a bug,
     /// and the log is how we find out which path did it.
@@ -39,8 +41,11 @@ final class MainWindow: NSObject, NSWindowDelegate {
     }
 
     func windowWillClose(_ notification: Notification) {
-        // Back to menu-bar-only: no Dock icon, no app switcher entry.
-        NSApp.setActivationPolicy(.accessory)
+        // Back to menu-bar-only — unless the quick-add panel is still up and
+        // needs focus.
+        if !VocabWindow.shared.isOpen {
+            NSApp.setActivationPolicy(.accessory)
+        }
     }
 
     private func build() {

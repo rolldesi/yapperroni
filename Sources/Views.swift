@@ -321,6 +321,16 @@ struct SettingsView: View {
                                      allowBareModifier: false)
                         .disabled(!settings.lockEnabled)
                     hint("Press once to start recording hands-free, press again to stop. It must include a modifier, because Yapperroni swallows this combination so it does not also type.")
+
+                    Divider()
+
+                    Toggle("Enable quick-add to vocabulary", isOn: $settings.vocabEnabled)
+                    KeyRecorderField(title: "Add a word",
+                                     binding: $settings.vocabBinding,
+                                     conflictsWith: settings.binding,
+                                     allowBareModifier: false)
+                        .disabled(!settings.vocabEnabled)
+                    hint("Opens a small window anywhere you are, so you can add a word the moment Yapperroni gets it wrong. Stays open until you press Escape, then hands focus back.")
                 }
 
                 group("Output") {
@@ -535,6 +545,39 @@ struct SettingsView: View {
 
     private func hint(_ s: String) -> some View {
         Text(s).font(.system(size: 11.5)).foregroundStyle(Palette.muted)
+    }
+}
+
+/// Echoes back the terms actually parsed out of the vocabulary field.
+///
+/// The separator is the thing most likely to be misunderstood, so rather than
+/// documenting it, show the result — a wrong separator is then obvious at a
+/// glance instead of silently producing one long "word".
+private struct ParsedVocabulary: View {
+    @ObservedObject private var settings = Settings.shared
+
+    var body: some View {
+        let terms = Vocabulary.terms(settings.customVocabulary)
+        return Group {
+            if terms.isEmpty {
+                Text("No words yet.")
+                    .font(.caption).foregroundStyle(Palette.muted)
+            } else {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("\(terms.count) word\(terms.count == 1 ? "" : "s")")
+                        .font(.caption).fontWeight(.medium)
+                    Text(terms.joined(separator: "   ·   "))
+                        .font(.system(size: 11, design: .monospaced))
+                        .foregroundStyle(Palette.muted)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(10)
+                .background(Palette.canvas, in: RoundedRectangle(cornerRadius: 8))
+                .overlay(RoundedRectangle(cornerRadius: 8)
+                    .strokeBorder(Palette.hairline, lineWidth: 1))
+            }
+        }
     }
 }
 

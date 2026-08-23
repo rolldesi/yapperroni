@@ -53,6 +53,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             prompt: UserDefaults.standard.bool(forKey: "hasLaunchedBefore"))
         startHotkey()
 
+        hotkey.onVocab      = { VocabWindow.shared.toggle() }
         hotkey.onActivate   = { [weak self] src in self?.beginDictation(src) }
         hotkey.onDeactivate = { [weak self] _   in self?.endDictation() }
 
@@ -354,12 +355,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let live = hotkey.start(push: settings.binding,
                                 lock: settings.lockBinding,
                                 lockEnabled: settings.lockEnabled,
+                                vocab: settings.vocabBinding,
+                                vocabEnabled: settings.vocabEnabled,
                                 mode: settings.activation)
         state.tapActive = live
         state.accessibilityGranted = Hotkey.requestAccessibility(prompt: false)
         setBadge(live ? nil : "!")
         Log.write("hotkey  push=\(settings.binding.displayName) "
                 + "lock=\(settings.lockEnabled ? settings.lockBinding.displayName : "off") "
+                + "vocab=\(settings.vocabEnabled ? settings.vocabBinding.displayName : "off") "
                 + "mode=\(settings.activation.rawValue) live=\(live)")
         refreshMenu()
     }
