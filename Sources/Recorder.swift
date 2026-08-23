@@ -24,6 +24,17 @@ final class Recorder {
     /// "mic gave us silence" from "the conversion ate the audio".
     private(set) var rawPeak: Float = 0
     private(set) var tapFormat: AVAudioFormat?
+    private var releaseWork: DispatchWorkItem?
+
+    /// How long voice processing stays warm after a dictation ends.
+    ///
+    /// While it is enabled the system is in voice-chat mode and ducks every
+    /// other app — music and video go quiet as if you were on a call. But
+    /// re-enabling it costs 300-500 ms, which would clip the first word of
+    /// every utterance. So it is released on a delay: back-to-back dictations
+    /// keep it warm and start instantly, and audio returns to normal shortly
+    /// after you stop.
+    private static let voiceProcessingGrace: TimeInterval = 6
 
     static let outputFormat = AVAudioFormat(
         commonFormat: .pcmFormatFloat32,
@@ -56,6 +67,9 @@ final class Recorder {
         // Whisper hear speech over background music. It must be set before the
         // engine starts, and it CHANGES the node's format — which is why the
         // tap format is read afterwards, not before.
+        releaseWork?.cancel()
+        releaseWork = nil
+
         let wantVP = Settings.shared.voiceIsolation
         if input.isVoiceProcessingEnabled != wantVP {
             do { try input.setVoiceProcessingEnabled(wantVP) }
@@ -106,6 +120,8 @@ final class Recorder {
         isRecording = false
         engine.inputNode.removeTap(onBus: 0)
         engine.stop()
+        scheduleVoiceProcessingRelease()
+
         // Deliberately NOT clearing converter/monoFormat: a tap callback may
         // still be mid-flight and reads both. start() replaces them anyway.
         level = 0
@@ -160,6 +176,26 @@ final class Recorder {
     /// Loudest 100 ms window. Global RMS is the wrong gate: hold the key for
     /// five seconds and speak for one, and the silence drags the average under
     /// any useful threshold.
+    /// Releases voice processing once dictation has been idle for a while.
+    /// Cancelled by the next `start()`.
+    private func scheduleVoiceProcessingRelease() {
+        releaseWork?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            guard let self, !self.isRecording else { return }
+            let input = self.engine.inputNode
+            guard input.isVoiceProcessingEnabled else { return }
+            do {
+                try input.setVoiceProcessingEnabled(false)
+                Log.write("audio   released voice processing (other apps back to full volume)")
+            } catch {
+                Log.write("audio   could not release voice processing: \(error.localizedDescription)")
+            }
+        }
+        releaseWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + Recorder.voiceProcessingGrace,
+                                      execute: work)
+    }
+
     static func peakRMS(_ s: [Float], windowSeconds: Double = 0.1) -> Float {
         let w = max(1, Int(Config.sampleRate * windowSeconds))
         guard s.count >= w else { return rms(s) }
