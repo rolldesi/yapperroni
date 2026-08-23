@@ -166,6 +166,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func endDictation() {
         guard recorder.isRecording else { return }
         levelTimer?.invalidate(); levelTimer = nil
+        // Stop ticking before the recorder is cleared: a tick starting in that
+        // window would read an emptied buffer.
+        streamer?.stopTicking()
 
         let pcm = recorder.stop()
         state.dictating = false

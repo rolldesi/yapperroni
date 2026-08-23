@@ -28,6 +28,10 @@ final class StreamingTranscriber {
     private var emitted: [String] = []
     private var running = false
     private let queue = DispatchQueue(label: "yapperroni.streaming", qos: .userInitiated)
+    /// Signalled on stop, so the loop wakes immediately instead of sitting out
+    /// the rest of its interval. Without this, releasing the key mid-sleep adds
+    /// most of `interval` before the final pass can even start.
+    private let wake = DispatchSemaphore(value: 0)
 
     /// Everything actually typed, which is what ended up in the user's document.
     var emittedText: String { emitted.joined(separator: " ") }
@@ -56,30 +60,72 @@ final class StreamingTranscriber {
                    Double(Recorder.peakRMS(pcm)) >= Settings.shared.minPeakRMS {
                     self.tick(pcm)
                 }
-                Thread.sleep(forTimeInterval: StreamingTranscriber.interval)
+                _ = self.wake.wait(timeout: .now() + StreamingTranscriber.interval)
             }
         }
+    }
+
+    /// Stops the loop without waiting. Call before clearing the recorder, so a
+    /// tick cannot start, read an emptied buffer, and transcribe silence.
+    func stopTicking() {
+        running = false
+        wake.signal()
     }
 
     /// Stops ticking, runs one last pass over the complete audio, and emits
     /// everything still outstanding. Returns the full text that was typed.
     func finish(_ pcm: [Float]) -> String {
-        running = false
+        stopTicking()
         // Wait for any tick already in flight, so the final pass cannot
-        // interleave with it and emit words twice.
+        // interleave with it and emit the same words twice.
         queue.sync {}
 
         let final = StreamingTranscriber.words(whisper.transcribe(pcm))
-        Log.write("stream  final=\(final.count) words, already emitted=\(emitted.count)")
-        if final.count > emitted.count {
-            let tail = Array(final[emitted.count...])
+
+        if let tail = alignedTail(final) {
             emit(tail)
+        } else {
+            // Alignment failed: the final pass segmented the speech differently
+            // than every incremental pass did. Fall back to counting, which is
+            // what this did before, and record it — a run of these means the
+            // alignment window needs widening.
+            Log.write("stream  tail alignment FAILED (final=\(final.count) emitted=\(emitted.count))")
+            if final.count > emitted.count {
+                emit(Array(final[emitted.count...]))
+            }
         }
         return emittedText
     }
 
+    /// The part of the final transcript that has not been typed yet.
+    ///
+    /// Counting words does not work: real speech re-segments between passes
+    /// ("gonna" becoming "going to", filler appearing and vanishing), and an
+    /// index slice then either skips real words or repeats typed ones. Instead
+    /// find where the already-typed text ends inside the final transcript.
+    ///
+    /// Scanned from the END on purpose. "…for you, ask what you can do for your
+    /// country" repeats "for you"; matching forwards would land on the first
+    /// occurrence and re-type everything after it.
+    private func alignedTail(_ final: [String]) -> [String]? {
+        guard !emitted.isEmpty else { return final }
+        let k = min(4, emitted.count)
+        let needle = emitted.suffix(k).map(StreamingTranscriber.normalize)
+        let hay = final.map(StreamingTranscriber.normalize)
+        guard hay.count >= needle.count else { return nil }
+
+        var i = hay.count - needle.count
+        while i >= 0 {
+            if Array(hay[i ..< i + needle.count]) == needle {
+                return Array(final[(i + needle.count)...])
+            }
+            i -= 1
+        }
+        return nil
+    }
+
     func cancel() {
-        running = false
+        stopTicking()
         queue.sync {}
     }
 
