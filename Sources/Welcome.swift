@@ -50,18 +50,29 @@ struct WelcomeView: View {
         }
     }
 
+    /// Worded from the current settings. The absolute claim only holds while
+    /// AI cleanup is off — once it is on, transcribed text is sent to a third
+    /// party, and saying otherwise would be false.
     private var privacyNote: some View {
-        HStack(alignment: .top, spacing: 12) {
-            Image(systemName: "lock.laptopcomputer")
-                .font(.title2).foregroundStyle(.green)
+        // A local cleanup model sends nothing anywhere, so it does not
+        // weaken the claim.
+        let cleanup = settings.cleanupEnabled && !settings.cleanupProvider.isLocal
+        return HStack(alignment: .top, spacing: 12) {
+            Image(systemName: cleanup ? "lock.open.laptopcomputer" : "lock.laptopcomputer")
+                .font(.title2).foregroundStyle(cleanup ? .orange : .green)
             VStack(alignment: .leading, spacing: 3) {
-                Text("Your voice never leaves this Mac").fontWeight(.medium)
-                Text("Speech recognition runs entirely on your own hardware. No account, no server, no analytics — Yapperroni contains no networking code at all. Audio is held in memory while you speak and discarded once it becomes text.")
+                Text(cleanup ? "Your voice stays here — your text does not"
+                             : "Your voice never leaves this Mac")
+                    .fontWeight(.medium)
+                Text(cleanup
+                     ? "Speech recognition runs on your own hardware and the audio is never uploaded. But AI cleanup is on, so each finished transcript is sent as text to \(settings.cleanupProvider.label) to be rewritten. Turn it off in Settings to keep everything local."
+                     : "Speech recognition runs entirely on your own hardware. No account, no server, no analytics. Audio is held in memory while you speak and discarded once it becomes text. Nothing is sent anywhere unless you turn on AI cleanup in Settings.")
                     .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
         }
         .padding(14)
-        .background(.green.opacity(0.09), in: RoundedRectangle(cornerRadius: 10))
+        .background((cleanup ? Color.orange : Color.green).opacity(0.09),
+                    in: RoundedRectangle(cornerRadius: 10))
     }
 
     private var permissions: some View {

@@ -165,7 +165,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         // Live mode types words as they settle. It must own the whole
         // utterance: batch would paste the same text again at the end.
-        if settings.liveTranscription, let w = whisper {
+        if settings.liveTranscription, !settings.cleanupEnabled, let w = whisper {
             let s = StreamingTranscriber(
                 whisper: w,
                 onEmit: { [weak self] chunk in
@@ -241,20 +241,40 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     return
                 }
 
-                let text = self.settings.trailingSpace ? raw + " " : raw
-                Injector.inject(text, into: target, mode: self.settings.output,
-                                leaveOnClipboard: self.settings.copyToClipboard)
+                guard self.settings.cleanupEnabled else {
+                    self.deliver(raw, target: target, seconds: seconds,
+                                 elapsed: elapsed, appName: appName)
+                    return
+                }
 
-                self.history.add(Utterance(date: Date(), text: raw, duration: seconds,
-                                           latency: elapsed, appName: appName))
-                self.wordCount += raw.split(separator: " ").count
-
-                let verb = self.settings.output == .copy ? "copied" : "inserted"
-                self.hud.show(.message(String(format: "%.1fs · %d words %@",
-                                              elapsed, raw.split(separator: " ").count, verb)),
-                              at: self.settings.hudPosition)
-                self.hud.hide(after: 1.0)
-                self.refreshMenu()
+                self.hud.show(.message("Cleaning up…"), at: self.settings.hudPosition)
+                let s = self.settings
+                Task {
+                    var text = raw
+                    let t1 = Date()
+                    do {
+                        text = try await Cleanup.run(raw,
+                                                     provider: s.cleanupProvider,
+                                                     model: s.cleanupModel,
+                                                     prompt: s.cleanupPrompt,
+                                                     baseURL: s.cleanupBaseURL)
+                        Log.write(String(format: "cleanup %@ ok in %.2fs",
+                                         s.cleanupProvider.rawValue, Date().timeIntervalSince(t1)))
+                    } catch {
+                        // The user already spoke these words — never drop them
+                        // because a network call failed. Insert the raw text and
+                        // say why. Status codes only; never the key or the body.
+                        Log.write("cleanup \(s.cleanupProvider.rawValue) FAILED: \(error)")
+                        await MainActor.run {
+                            self.flash("Cleanup failed (\(error)) — inserted raw text", 2.5)
+                        }
+                    }
+                    let final = text
+                    await MainActor.run {
+                        self.deliver(final, target: target, seconds: seconds,
+                                     elapsed: elapsed, appName: appName)
+                    }
+                }
             }
         }
     }
@@ -297,6 +317,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 self.refreshMenu()
             }
         }
+    }
+
+    /// Types or pastes the finished text and records it.
+    private func deliver(_ raw: String, target: NSRunningApplication?,
+                         seconds: Double, elapsed: Double, appName: String) {
+        let text = settings.trailingSpace ? raw + " " : raw
+        Injector.inject(text, into: target, mode: settings.output,
+                        leaveOnClipboard: settings.copyToClipboard)
+
+        history.add(Utterance(date: Date(), text: raw, duration: seconds,
+                              latency: elapsed, appName: appName))
+        wordCount += raw.split(separator: " ").count
+
+        let verb = settings.output == .copy ? "copied" : "inserted"
+        hud.show(.message(String(format: "%.1fs · %d words %@",
+                                 elapsed, raw.split(separator: " ").count, verb)),
+                 at: settings.hudPosition)
+        hud.hide(after: 1.0)
+        refreshMenu()
     }
 
     private func flash(_ message: String, _ seconds: TimeInterval) {

@@ -105,6 +105,32 @@ final class Settings: ObservableObject {
     /// noise suppression and automatic gain. Helps Whisper hear you over music
     /// and room noise. Takes effect on the next dictation.
     @Published var voiceIsolation: Bool        { didSet { d.set(voiceIsolation, forKey: "voiceIsolation") } }
+    /// Send the finished transcript to an LLM to be tidied up. Text only —
+    /// the audio never leaves the machine either way.
+    @Published var cleanupEnabled: Bool {
+        didSet {
+            guard cleanupEnabled != oldValue else { return }
+            d.set(cleanupEnabled, forKey: "cleanupEnabled")
+        }
+    }
+    @Published var cleanupProvider: CleanupProvider {
+        didSet {
+            guard cleanupProvider != oldValue else { return }
+            d.set(cleanupProvider.rawValue, forKey: "cleanupProvider")
+            // Each provider names its models differently; carry the user to a
+            // working default rather than leaving a stale ID behind.
+            if cleanupModel.isEmpty || cleanupModel == oldValue.defaultModel {
+                cleanupModel = cleanupProvider.defaultModel
+            }
+            if cleanupBaseURL.isEmpty || cleanupBaseURL == oldValue.defaultBaseURL {
+                cleanupBaseURL = cleanupProvider.defaultBaseURL
+            }
+        }
+    }
+    @Published var cleanupModel: String   { didSet { d.set(cleanupModel, forKey: "cleanupModel") } }
+    @Published var cleanupPrompt: String  { didSet { d.set(cleanupPrompt, forKey: "cleanupPrompt") } }
+    @Published var cleanupBaseURL: String { didSet { d.set(cleanupBaseURL, forKey: "cleanupBaseURL") } }
+
     /// Words and names to prime the decoder with. Whisper has no dictionary to
     /// update, but it conditions on an initial prompt, so listing your jargon
     /// here biases recognition toward it.
@@ -137,6 +163,11 @@ final class Settings: ObservableObject {
             "copyToClipboard": true,
             "trailingSpace": true,
             "voiceIsolation": true,
+            "cleanupEnabled": false,
+            "cleanupProvider": CleanupProvider.anthropic.rawValue,
+            "cleanupModel": CleanupProvider.anthropic.defaultModel,
+            "cleanupPrompt": Cleanup.defaultPrompt,
+            "cleanupBaseURL": "",
             "customVocabulary": "",
             "soundFeedback": false,
             "lockEnabled": true,
@@ -159,6 +190,11 @@ final class Settings: ObservableObject {
         copyToClipboard  = d.bool(forKey: "copyToClipboard")
         trailingSpace    = d.bool(forKey: "trailingSpace")
         voiceIsolation   = d.bool(forKey: "voiceIsolation")
+        cleanupEnabled   = d.bool(forKey: "cleanupEnabled")
+        cleanupProvider  = CleanupProvider(rawValue: d.string(forKey: "cleanupProvider") ?? "") ?? .anthropic
+        cleanupModel     = d.string(forKey: "cleanupModel") ?? CleanupProvider.anthropic.defaultModel
+        cleanupPrompt    = d.string(forKey: "cleanupPrompt") ?? Cleanup.defaultPrompt
+        cleanupBaseURL   = d.string(forKey: "cleanupBaseURL") ?? ""
         customVocabulary = d.string(forKey: "customVocabulary") ?? ""
         soundFeedback    = d.bool(forKey: "soundFeedback")
         historyEnabled   = d.bool(forKey: "historyEnabled")
@@ -226,6 +262,11 @@ final class Settings: ObservableObject {
         copyToClipboard  = true
         trailingSpace    = true
         voiceIsolation   = true
+        cleanupEnabled   = false
+        cleanupProvider  = .anthropic
+        cleanupModel     = CleanupProvider.anthropic.defaultModel
+        cleanupPrompt    = Cleanup.defaultPrompt
+        cleanupBaseURL   = ""
         customVocabulary = ""
         soundFeedback    = false
         historyEnabled   = true

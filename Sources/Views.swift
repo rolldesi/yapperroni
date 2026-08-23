@@ -387,6 +387,75 @@ struct SettingsView: View {
                     hint("Quieter input is dropped rather than sent to the model — Whisper invents confident sentences out of silence.")
                 }
 
+                group("Cleanup") {
+                    Toggle("Clean up transcripts with an AI model", isOn: $settings.cleanupEnabled)
+                    hint("After transcribing, the text is sent to a model you choose and rewritten — punctuation, capitalisation, filler words. Only the text is sent; the audio never leaves this Mac.")
+
+                    if settings.cleanupEnabled {
+                        if settings.liveTranscription {
+                            Text("Live transcription is on, so cleanup is skipped — words already typed cannot be rewritten. Turn live transcription off under Output to use cleanup.")
+                                .font(.caption).foregroundStyle(.orange)
+                        }
+
+                        Picker("Service", selection: $settings.cleanupProvider) {
+                            ForEach(CleanupProvider.allCases) { Text($0.label).tag($0) }
+                        }
+
+                        if settings.cleanupProvider == .local {
+                            hint("Runs on this Mac, so nothing is sent anywhere. Works with Ollama (default) or anything else that serves an OpenAI-compatible API, such as LM Studio on http://localhost:1234/v1.")
+                        }
+
+                        if settings.cleanupProvider == .custom || settings.cleanupProvider == .local {
+                            LabeledContent("Server URL") {
+                                TextField(settings.cleanupProvider.defaultBaseURL.isEmpty
+                                          ? "https://host/v1" : settings.cleanupProvider.defaultBaseURL,
+                                          text: $settings.cleanupBaseURL)
+                                    .textFieldStyle(.roundedBorder)
+                                    .font(.system(size: 12, design: .monospaced))
+                            }
+                            if settings.cleanupProvider == .custom {
+                                hint("Any OpenAI-compatible endpoint. Yapperroni appends /chat/completions.")
+                            }
+                        }
+
+                        if settings.cleanupProvider == .local {
+                            LocalModelPicker()
+                        } else {
+                            LabeledContent("Model") {
+                                TextField(settings.cleanupProvider.defaultModel,
+                                          text: $settings.cleanupModel)
+                                    .textFieldStyle(.roundedBorder)
+                                    .font(.system(size: 12, design: .monospaced))
+                            }
+                        }
+                        hint(settings.cleanupProvider.modelHint)
+
+                        if settings.cleanupProvider.requiresKey {
+                            APIKeyField(provider: settings.cleanupProvider)
+                        }
+
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text("How it should clean up").font(.callout)
+                            TextEditor(text: $settings.cleanupPrompt)
+                                .font(.system(size: 12, design: .monospaced))
+                                .frame(minHeight: 120)
+                                .padding(6)
+                                .background(Palette.canvas, in: RoundedRectangle(cornerRadius: 8))
+                                .overlay(RoundedRectangle(cornerRadius: 8)
+                                    .strokeBorder(Palette.hairline, lineWidth: 1))
+                                .scrollContentBackground(.hidden)
+                            HStack {
+                                Button("Restore default prompt") {
+                                    settings.cleanupPrompt = Cleanup.defaultPrompt
+                                }
+                                Spacer()
+                                CleanupTestButton()
+                            }
+                        }
+                        hint("The system prompt. Change it to set tone, formatting, or language — for example \"rewrite in British English and keep it formal\".")
+                    }
+                }
+
                 group("Vocabulary") {
                     Text("Words to listen for").font(.system(size: 13, weight: .medium))
                     TextEditor(text: $settings.customVocabulary)
@@ -466,6 +535,142 @@ struct SettingsView: View {
 
     private func hint(_ s: String) -> some View {
         Text(s).font(.system(size: 11.5)).foregroundStyle(Palette.muted)
+    }
+}
+
+/// Lists the models a local server actually has, so the field is a choice
+/// rather than a guess. Falls back to free text when nothing is listening.
+private struct LocalModelPicker: View {
+    @ObservedObject private var settings = Settings.shared
+    @State private var models: [String]?
+    @State private var checking = true
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            if let models, !models.isEmpty {
+                Picker("Model", selection: $settings.cleanupModel) {
+                    ForEach(models, id: \.self) { Text($0).tag($0) }
+                    if !models.contains(settings.cleanupModel) {
+                        Text("\(settings.cleanupModel) (not installed)").tag(settings.cleanupModel)
+                    }
+                }
+            } else {
+                LabeledContent("Model") {
+                    TextField(CleanupProvider.local.defaultModel, text: $settings.cleanupModel)
+                        .textFieldStyle(.roundedBorder)
+                        .font(.system(size: 12, design: .monospaced))
+                }
+            }
+
+            HStack(spacing: 8) {
+                Circle()
+                    .fill(checking ? Color.secondary : (models == nil ? Color.orange : Color.green))
+                    .frame(width: 7, height: 7)
+                Text(checking ? "Looking for a local server…"
+                     : models == nil ? "No server responding — start Ollama, or point the URL at your own"
+                     : "\(models!.count) model\(models!.count == 1 ? "" : "s") installed")
+                    .font(.caption).foregroundStyle(Palette.muted)
+                Spacer()
+                Button("Refresh") { probe() }.controlSize(.small)
+            }
+        }
+        .onAppear(perform: probe)
+    }
+
+    private func probe() {
+        checking = true
+        let base = settings.cleanupBaseURL
+        Task {
+            let found = await Cleanup.localModels(baseURL: base)
+            await MainActor.run {
+                models = found
+                checking = false
+                // Adopt an installed model if the saved one is not there.
+                if let found, !found.isEmpty, !found.contains(settings.cleanupModel) {
+                    settings.cleanupModel = found[0]
+                }
+            }
+        }
+    }
+}
+
+/// API key entry. The value lives in the Keychain, never in UserDefaults —
+/// so the field shows whether one is stored rather than the key itself.
+private struct APIKeyField: View {
+    let provider: CleanupProvider
+    @State private var entry = ""
+    @State private var stored = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            LabeledContent(provider.keyLabel) {
+                HStack {
+                    SecureField(stored ? "•••••••• stored in Keychain" : "Paste key",
+                                text: $entry)
+                        .textFieldStyle(.roundedBorder)
+                    if !entry.isEmpty {
+                        Button("Save") {
+                            Keychain.set(entry, for: provider.keychainAccount)
+                            entry = ""
+                            stored = Keychain.has(provider.keychainAccount)
+                        }
+                    } else if stored {
+                        Button("Remove") {
+                            Keychain.remove(provider.keychainAccount)
+                            stored = false
+                        }
+                    }
+                }
+            }
+            Text(stored
+                 ? "Stored in your login Keychain, not in Yapperroni's settings file."
+                 : "Kept in your login Keychain — never written to disk in plain text.")
+                .font(.caption).foregroundStyle(Palette.muted)
+        }
+        .onAppear { stored = Keychain.has(provider.keychainAccount) }
+        .onChange(of: provider) { _, new in
+            entry = ""
+            stored = Keychain.has(new.keychainAccount)
+        }
+    }
+}
+
+/// Runs one real cleanup call so configuration errors surface here rather than
+/// in the middle of dictating.
+private struct CleanupTestButton: View {
+    @ObservedObject private var settings = Settings.shared
+    @State private var running = false
+    @State private var result: String?
+    @State private var ok = false
+
+    var body: some View {
+        HStack(spacing: 8) {
+            if let result {
+                Text(result).font(.caption)
+                    .foregroundStyle(ok ? .green : .orange)
+                    .lineLimit(2)
+            }
+            Button(running ? "Testing…" : "Test") { run() }.disabled(running)
+        }
+    }
+
+    private func run() {
+        running = true
+        result = nil
+        let sample = "um so this is uh a test of the the cleanup thing i think it works"
+        let s = settings
+        Task {
+            do {
+                let out = try await Cleanup.run(sample,
+                                                provider: s.cleanupProvider,
+                                                model: s.cleanupModel,
+                                                prompt: s.cleanupPrompt,
+                                                baseURL: s.cleanupBaseURL)
+                await MainActor.run { ok = true; result = out; running = false }
+            } catch {
+                await MainActor.run { ok = false; result = "\(error)"; running = false }
+            }
+        }
     }
 }
 

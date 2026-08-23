@@ -1,7 +1,13 @@
 # Privacy
 
-Short version: **your voice never leaves your Mac.** Yapperroni has no server,
-no account, no analytics, no telemetry, and no network code of any kind.
+Short version: **your voice never leaves your Mac.** Speech recognition runs
+entirely on your own hardware — there is no server, no account, no analytics,
+and no telemetry.
+
+One feature is the exception, and it is **off by default**: AI cleanup. When you
+turn it on and supply your own API key, each finished transcript is sent **as
+text** to the provider you chose. Audio is never sent, under any setting. The
+section below spells out exactly what that means.
 
 ## What it records, and when
 
@@ -28,6 +34,9 @@ All of it under `~/Library/Application Support/Yapperroni/`:
 | `yapperroni.log` | Diagnostic lines: durations, measured loudness, and the transcribed text. |
 | `ggml-*.bin` | The speech model, if you added your own. |
 
+API keys are **not** in that folder — they are in your login Keychain under
+`com.rahuldesai.yapperroni`.
+
 Settings live in macOS preferences under `com.rahuldesai.yapperroni`.
 
 **History is on by default.** Turn it off in Settings → History, which stops new
@@ -40,6 +49,35 @@ To remove every trace:
 rm -rf ~/Library/Application\ Support/Yapperroni
 defaults delete com.rahuldesai.yapperroni
 ```
+
+## AI cleanup (off by default)
+
+Settings → Cleanup can send each finished transcript to Claude, OpenAI, Gemini,
+or any OpenAI-compatible endpoint you point it at, to fix punctuation and remove
+filler words.
+
+When it is enabled:
+
+- **What is sent:** the transcribed text of that utterance, plus your cleanup
+  instructions. Nothing else — not the audio, not your history, not the name of
+  the app you were dictating into.
+- **Who receives it:** the provider you selected, using your own API key.
+- **What they do with it:** their policy, not ours. Check your provider's data
+  retention and training terms — for API traffic these usually differ from their
+  consumer products.
+- **The welcome screen and this document both change wording** when cleanup is
+  on. Yapperroni will not claim to be fully local while it is sending your text
+  somewhere.
+
+When it is off, no network request is made at any point.
+
+**Your API key** is stored in your **login Keychain**, not in Yapperroni's
+settings file — a settings plist is readable by any process running as you and
+gets copied around by backups and sync. The key is never logged: failures record
+the provider name and HTTP status code only, never the key or the response body.
+
+Turning cleanup off, or removing the key with the Remove button, stops all
+outbound traffic immediately.
 
 ## What the clipboard does
 

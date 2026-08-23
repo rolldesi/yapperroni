@@ -14,6 +14,41 @@ Apple's voice-processing unit (echo cancellation, noise suppression, automatic
 gain) is enabled on the audio input — the same path FaceTime uses. That is what
 lets Whisper pick out speech with music playing. Toggle in Settings → Microphone.
 
+## Cleanup (optional, off by default)
+
+Two model choices, doing different jobs:
+
+| | |
+|---|---|
+| **Transcription** | Always local Whisper. Settings → Model. Audio never leaves the Mac, under any configuration. |
+| **Cleanup** | Optional second pass that rewrites the transcript — punctuation, capitalisation, filler words. Settings → Cleanup. |
+
+Cleanup runs on whichever service you pick:
+
+- **Local model** — Ollama (default, `http://localhost:11434/v1`) or anything else
+  serving an OpenAI-compatible API, such as LM Studio. No key, and **nothing
+  leaves the machine**. The model list is read from the server, so you pick from
+  what you have installed rather than typing a tag. A small model is plenty for
+  tidying text.
+- **Claude, OpenAI, Gemini, Groq**, or any **custom OpenAI-compatible endpoint** —
+  your own API key, stored in the login Keychain.
+
+You write the system prompt, so cleanup does what you want — tone, formatting,
+language. Settings → Cleanup → *How it should clean up*. The **Test** button runs
+one real call against a deliberately messy sample so misconfiguration surfaces
+there rather than mid-dictation.
+
+**Cleanup needs live transcription off.** Words already typed cannot be
+rewritten, so enabling cleanup skips live mode and inserts the cleaned text when
+you stop.
+
+**If the call fails** — no key, no network, rate limit, timeout — the raw
+transcript is inserted anyway and the reason is flashed. Speech you already said
+is never dropped because a network request failed.
+
+Only text is sent, never audio, and only when cleanup is on with a non-local
+service. See [PRIVACY.md](PRIVACY.md).
+
 ## Vocabulary
 
 Whisper has no dictionary to update. It is end-to-end, and its sense of which
@@ -293,6 +328,8 @@ Sources/
   Log.swift        append-only diagnostic log
   Whisper.swift    whisper.cpp wrapper; context loaded once, reused
   Streaming.swift  live transcription: re-transcribe, commit settled words
+  Cleanup.swift    optional LLM rewrite pass; local, Claude, OpenAI, Gemini, Groq
+  Keychain.swift   API keys in the login Keychain, never in settings
   Recorder.swift   AVAudioEngine capture + AVAudioConverter to 16 kHz mono
   Hotkey.swift     listen-only CGEventTap; any modifier or F-key, hold or toggle
   Injector.swift   paste / copy / type, into the app captured at key-down

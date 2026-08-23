@@ -104,6 +104,8 @@ swiftc \
   "$ROOT/Sources/Config.swift" \
   "$ROOT/Sources/Log.swift" \
   "$ROOT/Sources/KeyBinding.swift" \
+  "$ROOT/Sources/Keychain.swift" \
+  "$ROOT/Sources/Cleanup.swift" \
   "$ROOT/Sources/Settings.swift" \
   "$ROOT/Sources/KeyRecorder.swift" \
   "$ROOT/Sources/History.swift" \
