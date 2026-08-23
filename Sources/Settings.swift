@@ -76,6 +76,9 @@ final class Settings: ObservableObject {
     /// Type words as they settle, instead of pasting everything at the end.
     @Published var liveTranscription: Bool     { didSet { d.set(liveTranscription, forKey: "liveTranscription") } }
     @Published var hudPosition: HUDPosition    { didSet { d.set(hudPosition.rawValue, forKey: "hudPosition") } }
+    /// Leave every transcript on the clipboard, so it can be pasted anywhere
+    /// even when nothing was focused to type into.
+    @Published var copyToClipboard: Bool       { didSet { d.set(copyToClipboard, forKey: "copyToClipboard") } }
     @Published var trailingSpace: Bool         { didSet { d.set(trailingSpace, forKey: "trailingSpace") } }
     @Published var soundFeedback: Bool         { didSet { d.set(soundFeedback, forKey: "soundFeedback") } }
     @Published var historyEnabled: Bool        { didSet { d.set(historyEnabled, forKey: "historyEnabled") } }
@@ -101,6 +104,7 @@ final class Settings: ObservableObject {
             "activation": ActivationMode.hold.rawValue,
             "output": OutputMode.paste.rawValue,
             "hudPosition": HUDPosition.bottom.rawValue,
+            "copyToClipboard": true,
             "trailingSpace": true,
             "soundFeedback": false,
             "lockEnabled": true,
@@ -119,6 +123,7 @@ final class Settings: ObservableObject {
         activation       = ActivationMode(rawValue: d.string(forKey: "activation") ?? "") ?? .hold
         output           = OutputMode(rawValue: d.string(forKey: "output") ?? "") ?? .paste
         hudPosition      = HUDPosition(rawValue: d.string(forKey: "hudPosition") ?? "") ?? .bottom
+        copyToClipboard  = d.bool(forKey: "copyToClipboard")
         trailingSpace    = d.bool(forKey: "trailingSpace")
         soundFeedback    = d.bool(forKey: "soundFeedback")
         historyEnabled   = d.bool(forKey: "historyEnabled")
@@ -182,6 +187,7 @@ final class Settings: ObservableObject {
         activation       = .hold
         output           = .paste
         hudPosition      = .bottom
+        copyToClipboard  = true
         trailingSpace    = true
         soundFeedback    = false
         historyEnabled   = true

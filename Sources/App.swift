@@ -220,7 +220,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 }
 
                 let text = self.settings.trailingSpace ? raw + " " : raw
-                Injector.inject(text, into: target, mode: self.settings.output)
+                Injector.inject(text, into: target, mode: self.settings.output,
+                                leaveOnClipboard: self.settings.copyToClipboard)
 
                 self.history.add(Utterance(date: Date(), text: raw, duration: seconds,
                                            latency: elapsed, appName: appName))
@@ -261,6 +262,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 }
                 if self.settings.trailingSpace {
                     self.typeQueue.async { Injector.typeOut(" ") }
+                }
+                if self.settings.copyToClipboard {
+                    Injector.setClipboard(text)
                 }
                 self.history.add(Utterance(date: Date(), text: text, duration: seconds,
                                            latency: elapsed, appName: appName))

@@ -8,14 +8,30 @@ import Carbon.HIToolbox
 /// per-character injection drops in some Electron apps.
 enum Injector {
 
-    static func inject(_ text: String, into target: NSRunningApplication?, mode: OutputMode) {
+    /// `leaveOnClipboard` keeps the transcript on the clipboard afterwards. In
+    /// paste mode that means skipping the usual restore — otherwise the restore
+    /// would immediately overwrite the very thing the user asked us to leave.
+    static func inject(_ text: String, into target: NSRunningApplication?,
+                       mode: OutputMode, leaveOnClipboard: Bool = false) {
         guard !text.isEmpty else { return }
 
         switch mode {
-        case .paste: paste(text, into: target)
-        case .copy:  copyOnly(text)
-        case .type:  restoreFocus(target) { typeOut(text) }
+        case .paste:
+            paste(text, into: target, restoreClipboard: !leaveOnClipboard)
+        case .copy:
+            copyOnly(text)
+        case .type:
+            restoreFocus(target) {
+                typeOut(text)
+                if leaveOnClipboard { copyOnly(text) }
+            }
         }
+    }
+
+    /// Puts text on the clipboard without touching the focused app.
+    static func setClipboard(_ text: String) {
+        guard !text.isEmpty else { return }
+        copyOnly(text)
     }
 
     /// Leaves the focused app alone entirely.
@@ -56,7 +72,8 @@ enum Injector {
         }
     }
 
-    private static func paste(_ text: String, into target: NSRunningApplication?) {
+    private static func paste(_ text: String, into target: NSRunningApplication?,
+                              restoreClipboard: Bool = true) {
         let pb = NSPasteboard.general
         // ponytail: string-only clipboard save/restore. Deep-copy every
         // NSPasteboardItem if this ever eats someone's copied image.
@@ -70,6 +87,7 @@ enum Injector {
             postCommandV()
             // Give the target app time to read the pasteboard before we put
             // the old contents back.
+            guard restoreClipboard else { return }
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
                 guard pb.changeCount == stamp else { return } // user copied since; leave it
                 pb.clearContents()
