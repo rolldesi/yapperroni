@@ -23,6 +23,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// interleaves two Injector calls, and the second saves the first one's
     /// pasted text as the "original" clipboard to restore.
     private var isTranscribing = false
+    private var streamer: StreamingTranscriber?
+    /// Serial, so live chunks reach the target app in the order they settled.
+    private let typeQueue = DispatchQueue(label: "yapperroni.typing")
 
     func applicationDidFinishLaunching(_ note: Notification) {
         // After a DMG install, an older copy elsewhere on disk can still be
@@ -97,6 +100,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationWillTerminate(_ note: Notification) {
         hotkey.stop()
+        streamer?.cancel()
+        streamer = nil
         recorder.stop()
         whisper?.close()
         whisper = nil
@@ -135,6 +140,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if settings.soundFeedback { NSSound(named: "Tink")?.play() }
 
         hud.show(source == .lock ? .locked : .listening, at: settings.hudPosition)
+
+        // Live mode types words as they settle. It must own the whole
+        // utterance: batch would paste the same text again at the end.
+        if settings.liveTranscription, let w = whisper {
+            let s = StreamingTranscriber(
+                whisper: w,
+                onEmit: { [weak self] chunk in
+                    self?.typeQueue.async { Injector.typeOut(chunk) }
+                },
+                onPartial: { [weak self] text in
+                    guard let self, self.recorder.isRecording else { return }
+                    self.hud.setPartial(text)
+                })
+            streamer = s
+            s.start(sample: { [weak self] in self?.recorder.snapshot() ?? [] })
+        }
+
         levelTimer = Timer.scheduledTimer(withTimeInterval: 1.0 / 30, repeats: true) { [weak self] _ in
             guard let self else { return }
             self.hud.setLevel(self.recorder.level)
@@ -155,6 +177,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let peak = Recorder.peakRMS(pcm)
         Log.write(String(format: "release samples=%d secs=%.2f peak100ms=%.5f (floors: %.2fs / %.5f)",
                          pcm.count, seconds, peak, settings.minSpeechSeconds, settings.minPeakRMS))
+
+        if let live = streamer {
+            streamer = nil
+            finishLive(live, pcm: pcm, seconds: seconds, appName: appName)
+            return
+        }
 
         guard seconds >= settings.minSpeechSeconds, Double(peak) >= settings.minPeakRMS else {
             Log.write("        DROPPED by gate — adjust the silence gate in Settings")
@@ -198,6 +226,43 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 let verb = self.settings.output == .copy ? "copied" : "inserted"
                 self.hud.show(.message(String(format: "%.1fs · %d words %@",
                                               elapsed, raw.split(separator: " ").count, verb)),
+                              at: self.settings.hudPosition)
+                self.hud.hide(after: 1.0)
+                self.refreshMenu()
+            }
+        }
+    }
+
+    /// Final pass for a live utterance: emits whatever the incremental passes
+    /// held back, then records it. The gate is not applied here — words are
+    /// already in the user's document and cannot be retracted.
+    private func finishLive(_ live: StreamingTranscriber,
+                            pcm: [Float], seconds: Double, appName: String) {
+        hud.show(.transcribing, at: settings.hudPosition)
+        isTranscribing = true
+        let t0 = Date()
+
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let text = live.finish(pcm)
+            let elapsed = Date().timeIntervalSince(t0)
+
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.isTranscribing = false
+                Log.write(String(format: "result  live %.2fs tail \"%@\"", elapsed, text))
+
+                guard !text.isEmpty else {
+                    self.hud.show(.message("No speech detected"), at: self.settings.hudPosition)
+                    self.hud.hide(after: 1.2)
+                    return
+                }
+                if self.settings.trailingSpace {
+                    self.typeQueue.async { Injector.typeOut(" ") }
+                }
+                self.history.add(Utterance(date: Date(), text: text, duration: seconds,
+                                           latency: elapsed, appName: appName))
+                self.wordCount += text.split(separator: " ").count
+                self.hud.show(.message("\(text.split(separator: " ").count) words"),
                               at: self.settings.hudPosition)
                 self.hud.hide(after: 1.0)
                 self.refreshMenu()

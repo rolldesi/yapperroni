@@ -8,6 +8,31 @@ Local Whisper (`small.en`, q5_1, 181 MB) via whisper.cpp with Metal. No API
 keys, no account, no network. Transcription only — no autocorrect, no LLM
 rewriting, no "AI features". It types what you said.
 
+## Live transcription
+
+On by default. Words are typed as they settle, roughly a second behind you,
+instead of everything landing at once when you let go.
+
+Whisper is not a streaming model, but re-transcribing the whole buffer is
+cheap — the encoder runs on the mel frames that exist, so a 2 s clip and an
+11 s clip both cost about 200 ms. Every 450 ms Yapperroni transcribes
+everything recorded so far and emits whatever new words have settled.
+
+"Settled" is the important part. Whisper rewrites the tail of its output as
+more audio arrives — "i scream" becomes "ice cream". Typed characters cannot
+be retracted, so a word is only emitted once two consecutive passes agree on
+it *and* it is not among the last two words, which are the ones still in flux.
+A final pass on release emits whatever was held back.
+
+The cost of streaming is slightly worse punctuation and capitalisation than a
+single pass over the finished recording, because early words are committed
+before the sentence that would have shaped them exists. Turn it off in
+Settings → Output for the batch behaviour.
+
+Live mode always types character by character rather than pasting. That is
+what makes incremental output possible, and it also avoids terminals
+collapsing an insert into `[Pasted text]`.
+
 ## Speed
 
 ~0.3–0.5 s from key release to pasted text for a normal sentence, measured on
@@ -203,6 +228,7 @@ $APP --selftest-whisper vendor-whisper/samples/jfk.wav   # model + decode
 $APP --selftest-audio                                     # mic + 16 kHz resample
 $APP --selftest-hotkey                                    # bound modifier's bit mask, no permissions needed
 $APP --selftest-toggle                                    # hold/toggle state machine, incl. rejected presses
+$APP --selftest-streaming vendor-whisper/samples/jfk.wav  # words emerging in simulated real time
 ```
 
 The strongest one is the acoustic loopback: it plays a known clip through the
@@ -236,6 +262,7 @@ Sources/
   History.swift    transcript store, JSON persisted
   Log.swift        append-only diagnostic log
   Whisper.swift    whisper.cpp wrapper; context loaded once, reused
+  Streaming.swift  live transcription: re-transcribe, commit settled words
   Recorder.swift   AVAudioEngine capture + AVAudioConverter to 16 kHz mono
   Hotkey.swift     listen-only CGEventTap; any modifier or F-key, hold or toggle
   Injector.swift   paste / copy / type, into the app captured at key-down
@@ -382,8 +409,6 @@ permits.
 
 ## Known ceilings
 
-- Batch, not streaming. Transcription starts on key release. Under a second,
-  so it has not been worth the complexity of streaming partials.
 - English only (`small.en`). A multilingual model is a file swap plus removing
   the hardcoded `en` language tag in `Whisper.swift`.
 - Clipboard save/restore is string-only. Copying an image, dictating, and

@@ -111,6 +111,7 @@ swiftc \
   "$ROOT/Sources/Views.swift" \
   "$ROOT/Sources/Welcome.swift" \
   "$ROOT/Sources/Whisper.swift" \
+  "$ROOT/Sources/Streaming.swift" \
   "$ROOT/Sources/Recorder.swift" \
   "$ROOT/Sources/Hotkey.swift" \
   "$ROOT/Sources/Injector.swift" \

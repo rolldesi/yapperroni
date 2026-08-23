@@ -241,6 +241,66 @@ func selftestToggle() -> Never {
     exit(failures == 0 ? 0 : 1)
 }
 
+/// Feeds a known clip through the live transcriber in simulated real time and
+/// prints each emission as it settles. Exercises the prefix-commitment logic
+/// without needing anyone to speak.
+func selftestStreaming(_ wav: String) -> Never {
+    guard let pcm = loadWav(wav) else { print("FAIL: could not read \(wav)"); exit(1) }
+    guard let w = Whisper(modelPath: Settings.shared.modelPath) else {
+        print("FAIL: whisper init"); exit(1)
+    }
+    let total = Double(pcm.count) / Config.sampleRate
+    print(String(format: "clip: %.2fs — emitting as it settles\n", total))
+
+    let start = Date()
+    var emissions: [(Double, String)] = []
+    let lock = NSLock()
+
+    let live = StreamingTranscriber(
+        whisper: w,
+        onEmit: { chunk in
+            let t = Date().timeIntervalSince(start)
+            lock.lock(); emissions.append((t, chunk)); lock.unlock()
+            print(String(format: "  %5.2fs  %@", t, chunk))
+        },
+        onPartial: { _ in })
+
+    // The sample closure returns only the audio that would have been recorded
+    // by now, so the transcriber sees the clip arrive at real-time speed.
+    live.start(sample: {
+        let elapsed = Date().timeIntervalSince(start)
+        let n = min(pcm.count, Int(elapsed * Config.sampleRate))
+        return Array(pcm[0..<max(0, n)])
+    })
+
+    // Let it play out, pumping the run loop so main-queue callbacks fire.
+    while Date().timeIntervalSince(start) < total {
+        RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+    }
+    let text = live.finish(pcm)
+    RunLoop.current.run(until: Date().addingTimeInterval(0.3))
+    w.close()
+
+    lock.lock(); let count = emissions.count; lock.unlock()
+    print("\nfinal: \"\(text)\"")
+    print("emissions during speech: \(count)")
+
+    guard !text.isEmpty else { print("FAIL: nothing transcribed"); exit(1) }
+    guard count >= 2 else {
+        print("FAIL: everything arrived at the end — not streaming"); exit(1)
+    }
+    // A word emitted twice would appear twice in the document.
+    let words = StreamingTranscriber.words(text)
+    var seen = Set<String>(), dupeRun = 0
+    for (a, b) in zip(words, words.dropFirst()) where StreamingTranscriber.normalize(a) == StreamingTranscriber.normalize(b) {
+        dupeRun += 1
+        _ = seen.insert(a)
+    }
+    if dupeRun > 1 { print("FAIL: \(dupeRun) adjacent duplicate words — commitment is double-emitting"); exit(1) }
+    print("PASS")
+    exit(0)
+}
+
 let args = CommandLine.arguments
 switch args.dropFirst().first {
 case "--selftest-whisper":
@@ -252,6 +312,9 @@ case "--selftest-hotkey":
     selftestHotkey()
 case "--selftest-toggle":
     selftestToggle()
+case "--selftest-streaming":
+    guard args.count > 2 else { print("usage: yapperroni --selftest-streaming <file.wav>"); exit(2) }
+    selftestStreaming(args[2])
 case "--selftest-loopback":
     guard args.count > 2 else { print("usage: yapperroni --selftest-loopback <file.wav>"); exit(2) }
     selftestLoopback(args[2])

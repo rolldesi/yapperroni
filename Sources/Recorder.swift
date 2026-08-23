@@ -80,6 +80,13 @@ final class Recorder {
         isRecording = true
     }
 
+    /// Everything captured so far, without stopping. Used by live
+    /// transcription, which re-reads the whole buffer on every pass.
+    func snapshot() -> [Float] {
+        lock.lock(); defer { lock.unlock() }
+        return samples
+    }
+
     /// Stops capture and returns everything recorded, resampled to 16 kHz mono.
     @discardableResult
     func stop() -> [Float] {

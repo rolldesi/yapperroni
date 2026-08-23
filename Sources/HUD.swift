@@ -113,6 +113,15 @@ final class HUD {
         panel.orderFrontRegardless()
     }
 
+    /// Live partial transcript, so you can see it keeping up with you.
+    func setPartial(_ text: String) {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        // Tail of the text: the newest words are the interesting ones.
+        let tail = trimmed.count > 46 ? "…" + String(trimmed.suffix(46)) : trimmed
+        label.stringValue = tail
+    }
+
     func setLevel(_ rms: Float) {
         // rms is tiny for speech; scale so normal talking fills the bar.
         let norm = min(1.0, Double(rms) * 22.0)

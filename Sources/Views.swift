@@ -175,10 +175,19 @@ struct SettingsView: View {
             }
 
             SwiftUI.Section("Output") {
-                Picker("When finished", selection: $settings.output) {
-                    ForEach(OutputMode.allCases) { Text($0.label).tag($0) }
+                Toggle("Live transcription", isOn: $settings.liveTranscription)
+                Text("Types each word as soon as it settles, instead of inserting everything when you stop. Words appear about a second behind you.")
+                    .font(.caption).foregroundStyle(.secondary)
+
+                if settings.liveTranscription {
+                    Text("Live mode always types character by character, so the output mode below does not apply. Typing also avoids terminals collapsing an insert into “[Pasted text]”.")
+                        .font(.caption).foregroundStyle(.secondary)
+                } else {
+                    Picker("When finished", selection: $settings.output) {
+                        ForEach(OutputMode.allCases) { Text($0.label).tag($0) }
+                    }
+                    Text(settings.output.detail).font(.caption).foregroundStyle(.secondary)
                 }
-                Text(settings.output.detail).font(.caption).foregroundStyle(.secondary)
                 Toggle("Add a trailing space", isOn: $settings.trailingSpace)
             }
 

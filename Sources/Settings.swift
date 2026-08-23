@@ -73,6 +73,8 @@ final class Settings: ObservableObject {
         }
     }
     @Published var output: OutputMode          { didSet { d.set(output.rawValue, forKey: "output") } }
+    /// Type words as they settle, instead of pasting everything at the end.
+    @Published var liveTranscription: Bool     { didSet { d.set(liveTranscription, forKey: "liveTranscription") } }
     @Published var hudPosition: HUDPosition    { didSet { d.set(hudPosition.rawValue, forKey: "hudPosition") } }
     @Published var trailingSpace: Bool         { didSet { d.set(trailingSpace, forKey: "trailingSpace") } }
     @Published var soundFeedback: Bool         { didSet { d.set(soundFeedback, forKey: "soundFeedback") } }
@@ -102,6 +104,7 @@ final class Settings: ObservableObject {
             "trailingSpace": true,
             "soundFeedback": false,
             "lockEnabled": true,
+            "liveTranscription": true,
             "historyEnabled": true,
             "historyLimit": 500,
             "minPeakRMS": Double(Config.defaultMinPeakRMS),
@@ -112,6 +115,7 @@ final class Settings: ObservableObject {
         binding     = Settings.decodeBinding(d.data(forKey: "binding"), "binding", .pushDefault)
         lockBinding = Settings.decodeBinding(d.data(forKey: "lockBinding"), "lockBinding", .lockDefault)
         lockEnabled = d.bool(forKey: "lockEnabled")
+        liveTranscription = d.bool(forKey: "liveTranscription")
         activation       = ActivationMode(rawValue: d.string(forKey: "activation") ?? "") ?? .hold
         output           = OutputMode(rawValue: d.string(forKey: "output") ?? "") ?? .paste
         hudPosition      = HUDPosition(rawValue: d.string(forKey: "hudPosition") ?? "") ?? .bottom
@@ -174,6 +178,7 @@ final class Settings: ObservableObject {
         binding          = .pushDefault
         lockBinding      = .lockDefault
         lockEnabled      = true
+        liveTranscription = true
         activation       = .hold
         output           = .paste
         hudPosition      = .bottom

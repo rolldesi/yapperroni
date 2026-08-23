@@ -25,20 +25,34 @@ enum Injector {
         pb.setString(text, forType: .string)
     }
 
-    /// Per-character synthesis. Slower and can drop characters in some Electron
-    /// apps, but works where paste is intercepted or blocked.
-    private static func typeOut(_ text: String) {
-        let src = CGEventSource(stateID: .combinedSessionState)
+    /// Per-character synthesis. Slower than pasting, but it is the only way to
+    /// deliver text incrementally, and terminals that collapse a paste into
+    /// "[Pasted text]" show typed characters normally.
+    ///
+    /// Two things matter while the user is holding the dictation modifier:
+    /// the event source uses `.privateState` so it does not inherit the
+    /// physically-held ⌥, and flags are cleared explicitly. Without both, every
+    /// character arrives option-modified and comes out as `ø∂ƒ` — or worse,
+    /// fires a menu shortcut in the receiving app.
+    static func typeOut(_ text: String) {
+        guard !text.isEmpty else { return }
+        let src = CGEventSource(stateID: .privateState)
+        src?.setLocalEventsFilterDuringSuppressionState(
+            [.permitLocalMouseEvents, .permitLocalKeyboardEvents],
+            state: .eventSuppressionStateSuppressionInterval
+        )
         for chunk in Array(text.utf16).chunked(into: 16) {
             guard let down = CGEvent(keyboardEventSource: src, virtualKey: 0, keyDown: true),
                   let up   = CGEvent(keyboardEventSource: src, virtualKey: 0, keyDown: false)
             else { continue }
             var buf = chunk
+            down.flags = []
+            up.flags = []
             down.keyboardSetUnicodeString(stringLength: buf.count, unicodeString: &buf)
             up.keyboardSetUnicodeString(stringLength: buf.count, unicodeString: &buf)
             down.post(tap: .cgAnnotatedSessionEventTap)
             up.post(tap: .cgAnnotatedSessionEventTap)
-            usleep(1500)
+            usleep(1200)
         }
     }
 
