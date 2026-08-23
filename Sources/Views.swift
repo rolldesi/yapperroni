@@ -1,16 +1,40 @@
 import SwiftUI
 import AppKit
 
-/// Adaptive surfaces. `Color.primary` is black in light and white in dark, so
-/// tinting with it gives the same subtle separation in both themes — hardcoded
-/// black would vanish on a dark background.
+/// The app's palette.
+///
+/// Neutrals are tinted rather than pure — pure #000/#888 is the giveaway of an
+/// undesigned interface, and a hair of blue in the greys reads as intentional
+/// at no cost to legibility. Every colour is a dynamic NSColor so light and
+/// dark each get a hand-picked value instead of one value at two opacities.
 enum Palette {
-    static let canvas = Color(nsColor: .textBackgroundColor)
+    private static func dynamic(light: (Double, Double, Double),
+                                dark: (Double, Double, Double)) -> Color {
+        Color(nsColor: NSColor(name: nil) { appearance in
+            let isDark = appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
+            let c = isDark ? dark : light
+            return NSColor(srgbRed: c.0, green: c.1, blue: c.2, alpha: 1)
+        })
+    }
+
+    /// Page background.
+    static let canvas   = dynamic(light: (1.00, 1.00, 1.00), dark: (0.075, 0.075, 0.086))
+    /// Grouped panels and input fields.
+    static let surface  = dynamic(light: (0.969, 0.969, 0.980), dark: (0.110, 0.110, 0.125))
+    /// Primary text — near-black, never pure.
+    static let ink      = dynamic(light: (0.090, 0.090, 0.106), dark: (0.957, 0.957, 0.969))
+    /// Secondary text and metadata.
+    static let muted    = dynamic(light: (0.443, 0.443, 0.478), dark: (0.604, 0.604, 0.651))
+    /// Separators.
+    static let hairline = dynamic(light: (0.902, 0.902, 0.922), dark: (0.165, 0.165, 0.188))
+    /// Row hover.
+    static let hover    = dynamic(light: (0.957, 0.957, 0.973), dark: (0.137, 0.137, 0.153))
+    /// Taken from the waveform in the app icon, so the interface and the icon
+    /// belong to the same object.
+    static let accent   = dynamic(light: (0.918, 0.435, 0.212), dark: (1.000, 0.573, 0.325))
+
     static func tint(_ o: Double) -> Color { Color.primary.opacity(o) }
 }
-
-// A plain white canvas, forced regardless of system appearance — the brief
-// asked for this twice. Two tabs, nothing else.
 
 struct ContentView: View {
     @ObservedObject private var state = AppState.shared
@@ -31,6 +55,9 @@ struct ContentView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
             .background(Palette.canvas)
+            // Controls pick up the accent from the app icon rather than
+            // system blue, so the interface reads as part of the same object.
+            .tint(Palette.accent)
         }
     }
 }
@@ -63,9 +90,9 @@ private struct TabBar: View {
             VStack(spacing: 7) {
                 Text(section.label)
                     .font(.system(size: 14, weight: active ? .semibold : .regular))
-                    .foregroundStyle(active ? Color.primary : Palette.tint(0.45))
+                    .foregroundStyle(active ? Palette.ink : Palette.muted)
                 Rectangle()
-                    .fill(active ? Color.primary : Color.clear)
+                    .fill(active ? Palette.accent : Color.clear)
                     .frame(width: 20, height: 2)
             }
         }
@@ -85,7 +112,7 @@ private struct StatusPill: View {
 
         HStack(spacing: 6) {
             Circle().fill(color).frame(width: 6, height: 6)
-            Text(text).font(.caption).foregroundStyle(.secondary)
+            Text(text).font(.caption).foregroundStyle(Palette.muted)
         }
     }
 }
@@ -134,7 +161,7 @@ struct HistoryView: View {
         VStack(alignment: .leading, spacing: 18) {
             Text("History")
                 .font(.system(size: 26, weight: .semibold))
-                .foregroundStyle(.primary)
+                .foregroundStyle(Palette.ink)
 
             searchBar
         }
@@ -146,13 +173,13 @@ struct HistoryView: View {
     private var searchBar: some View {
         HStack(spacing: 12) {
             HStack(spacing: 8) {
-                Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
+                Image(systemName: "magnifyingglass").foregroundStyle(Palette.muted)
                 TextField("Search transcripts", text: $query)
                     .textFieldStyle(.plain)
             }
             .padding(.horizontal, 10)
             .padding(.vertical, 7)
-            .background(Palette.tint(0.035), in: RoundedRectangle(cornerRadius: 7))
+            .background(Palette.surface, in: RoundedRectangle(cornerRadius: 8))
 
             if !selection.isEmpty {
                 Button {
@@ -173,7 +200,7 @@ struct HistoryView: View {
             .fixedSize()
         }
         .buttonStyle(.plain)
-        .foregroundStyle(.secondary)
+        .foregroundStyle(Palette.muted)
     }
 
     private func row(_ u: Utterance) -> some View {
@@ -194,7 +221,7 @@ struct HistoryView: View {
             VStack(alignment: .leading, spacing: 5) {
                 Text(u.text)
                     .font(.system(size: 14))
-                    .foregroundStyle(.primary)
+                    .foregroundStyle(Palette.ink)
                     .textSelection(.enabled)
                     .lineLimit(4)
                 HStack(spacing: 10) {
@@ -205,7 +232,7 @@ struct HistoryView: View {
                     Text("\(u.wordCount) words")
                 }
                 .font(.system(size: 11.5))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(Palette.muted)
             }
 
             Spacer(minLength: 8)
@@ -216,12 +243,12 @@ struct HistoryView: View {
                     Button(role: .destructive) { store.delete([u.id]) } label: { Image(systemName: "trash") }
                 }
                 .buttonStyle(.plain)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(Palette.muted)
             }
         }
         .padding(.horizontal, 24)
         .padding(.vertical, 12)
-        .background(hovering == u.id ? Palette.tint(0.025) : Color.clear)
+        .background(hovering == u.id ? Palette.hover : Color.clear)
         .onHover { hovering = $0 ? u.id : (hovering == u.id ? nil : hovering) }
         .contextMenu {
             Button("Copy") { copy(u.text) }
@@ -246,9 +273,9 @@ struct HistoryView: View {
     private var empty: some View {
         VStack(spacing: 10) {
             Image(systemName: "waveform").font(.system(size: 36)).foregroundStyle(.tertiary)
-            Text("No dictations yet").font(.system(size: 15, weight: .medium)).foregroundStyle(.primary)
+            Text("No dictations yet").font(.system(size: 15, weight: .medium)).foregroundStyle(Palette.ink)
             Text("Hold \(Settings.shared.binding.displayName) and speak.")
-                .font(.system(size: 13)).foregroundStyle(.secondary)
+                .font(.system(size: 13)).foregroundStyle(Palette.muted)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
@@ -272,7 +299,7 @@ struct SettingsView: View {
             VStack(alignment: .leading, spacing: 36) {
                 Text("Settings")
                     .font(.system(size: 26, weight: .semibold))
-                    .foregroundStyle(.primary)
+                    .foregroundStyle(Palette.ink)
                     .padding(.top, 4)
 
                 group("Shortcuts") {
@@ -337,7 +364,7 @@ struct SettingsView: View {
                             Text("Minimum loudness")
                             Spacer()
                             Text(String(format: "%.4f", settings.minPeakRMS))
-                                .monospacedDigit().foregroundStyle(.secondary)
+                                .monospacedDigit().foregroundStyle(Palette.muted)
                         }
                         Slider(value: $settings.minPeakRMS, in: 0.0001...0.02)
                     }
@@ -346,7 +373,7 @@ struct SettingsView: View {
                             Text("Minimum length")
                             Spacer()
                             Text(String(format: "%.2fs", settings.minSpeechSeconds))
-                                .monospacedDigit().foregroundStyle(.secondary)
+                                .monospacedDigit().foregroundStyle(Palette.muted)
                         }
                         Slider(value: $settings.minSpeechSeconds, in: 0.05...2.0)
                     }
@@ -400,7 +427,7 @@ struct SettingsView: View {
                         Text(state.accessibilityGranted
                              ? "Accessibility granted"
                              : "Accessibility required for the hotkey and pasting")
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(Palette.muted)
                         Spacer()
                         Button("Open Settings…") {
                             NSWorkspace.shared.open(URL(string:
@@ -434,11 +461,11 @@ struct SettingsView: View {
             }
         }
         .padding(18)
-        .background(Palette.tint(0.02), in: RoundedRectangle(cornerRadius: 12))
+        .background(Palette.surface, in: RoundedRectangle(cornerRadius: 12))
     }
 
     private func hint(_ s: String) -> some View {
-        Text(s).font(.system(size: 11.5)).foregroundStyle(.secondary)
+        Text(s).font(.system(size: 11.5)).foregroundStyle(Palette.muted)
     }
 }
 

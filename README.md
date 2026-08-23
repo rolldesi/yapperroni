@@ -8,6 +8,27 @@ Local Whisper (`small.en`, q5_1, 181 MB) via whisper.cpp with Metal. No API
 keys, no account, no network. Transcription only — no autocorrect, no LLM
 rewriting, no "AI features". It types what you said.
 
+## Hearing you over noise
+
+Apple's voice-processing unit (echo cancellation, noise suppression, automatic
+gain) is enabled on the audio input — the same path FaceTime uses. That is what
+lets Whisper pick out speech with music playing. Toggle in Settings → Microphone.
+
+## Vocabulary
+
+Whisper has no dictionary to update. It is end-to-end, and its sense of which
+words exist comes from training data that predates the model — `small.en` is
+from September 2022, so anything newer transcribes badly ("codex" comes out as
+"codecs").
+
+It does condition on an initial prompt, so Settings → Vocabulary takes a list
+of names and jargon and feeds them in as a glossary. Capped at ~380 characters:
+the prompt competes with your audio for the decoder's attention.
+
+The other lever is the model. `large-v3-turbo` is from 2024 and much better at
+proper nouns, at roughly twice the latency — drop the `.bin` in the support
+folder and pick it in Settings → Model.
+
 ## Live transcription
 
 On by default. Words are typed as they settle, roughly a second behind you,
@@ -32,6 +53,15 @@ Settings → Output for the batch behaviour.
 Live mode always types character by character rather than pasting. That is
 what makes incremental output possible, and it also avoids terminals
 collapsing an insert into `[Pasted text]`.
+
+Every finished transcript is also left on the clipboard, so it can be pasted
+anywhere even if nothing was focused to type into. Toggle in Settings → Output.
+
+The last words land about 0.2s after you release. Getting there needed two
+fixes: the polling loop now wakes on a semaphore instead of sitting out its
+450ms sleep, and the final pass locates the already-typed text inside the
+finished transcript by anchor rather than by counting words, because real
+speech re-segments between passes.
 
 ## Speed
 
@@ -307,6 +337,13 @@ matches. `KeyBinding.normalize` masks to the four modifiers that matter.
 regardless of length, and it survives unicode that per-character injection
 drops in some Electron apps. The clipboard is restored ~250 ms later, and
 skipped if you copied something in the meantime.
+
+**It never takes focus it was not given.** This is a background tool, so
+window shows are logged with a reason, activation is ordinary rather than
+`ignoringOtherApps`, a second launch exits quietly instead of pulling the
+running instance forward, reopen events in the first seconds after launch are
+ignored as startup noise, and the paste path refuses to activate Yapperroni
+itself if it happened to be frontmost when dictation started.
 
 **The window flips the activation policy.** Yapperroni is `.accessory` (no Dock icon)
 until you open the window, then `.regular` until you close it. An accessory app
