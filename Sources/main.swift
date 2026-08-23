@@ -301,6 +301,57 @@ func selftestStreaming(_ wav: String) -> Never {
     exit(0)
 }
 
+/// Exercises tail alignment directly — the logic that decides which words the
+/// final pass still owes the user. Its failure modes are silent: too far right
+/// drops real words, too far left retypes them.
+func selftestAlign() -> Never {
+    var failures = 0
+    func check(_ what: String, emitted: [String], final: [String], want: [String]?) {
+        let got = StreamingTranscriber.tailAfter(emitted: emitted, final: final)
+        let ok = got.map { $0.map(StreamingTranscriber.normalize) }
+               == want.map { $0.map(StreamingTranscriber.normalize) }
+        if !ok { failures += 1 }
+        print("  \(ok ? "ok  " : "FAIL") \(what)")
+        if !ok { print("        got \(got as Any)\n       want \(want as Any)") }
+    }
+
+    check("nothing emitted yet — everything is owed",
+          emitted: [], final: ["hello", "there"], want: ["hello", "there"])
+
+    check("clean continuation",
+          emitted: ["hello", "there"], final: ["hello", "there", "friend"], want: ["friend"])
+
+    check("nothing left to emit",
+          emitted: ["hello", "there"], final: ["hello", "there"], want: [])
+
+    check("punctuation and case added by the final pass are not re-emitted",
+          emitted: ["hello", "there"], final: ["Hello,", "there!", "friend"], want: ["friend"])
+
+    // Repeated phrase: taking the LAST match would skip "for your country".
+    check("repeated phrase — anchor must not jump to the later occurrence",
+          emitted: "ask not what your country can do for you".split(separator: " ").map(String.init),
+          final: "ask not what your country can do for you ask what you can do for your country".split(separator: " ").map(String.init),
+          want: "ask what you can do for your country".split(separator: " ").map(String.init))
+
+    // Genuinely repeated words: taking the last match returns nothing and the
+    // real repeats are lost.
+    check("go go go go — repeats must survive",
+          emitted: ["go", "go", "go", "go"],
+          final: ["go", "go", "go", "go", "go", "go"],
+          want: ["go", "go"])
+
+    check("re-segmentation — gonna becomes going to",
+          emitted: ["i", "am", "gonna"], final: ["i", "am", "gonna", "leave", "now"],
+          want: ["leave", "now"])
+
+    check("no anchor found — caller falls back",
+          emitted: ["completely", "different", "words", "here"],
+          final: ["nothing", "matches"], want: nil)
+
+    print(failures == 0 ? "PASS" : "FAIL: \(failures) case(s)")
+    exit(failures == 0 ? 0 : 1)
+}
+
 let args = CommandLine.arguments
 switch args.dropFirst().first {
 case "--selftest-whisper":
@@ -312,6 +363,8 @@ case "--selftest-hotkey":
     selftestHotkey()
 case "--selftest-toggle":
     selftestToggle()
+case "--selftest-align":
+    selftestAlign()
 case "--selftest-streaming":
     guard args.count > 2 else { print("usage: yapperroni --selftest-streaming <file.wav>"); exit(2) }
     selftestStreaming(args[2])

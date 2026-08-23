@@ -11,15 +11,21 @@ final class MainWindow: NSObject, NSWindowDelegate {
     static let shared = MainWindow()
     private var window: NSWindow?
 
-    func show(section: Section = .history) {
+    /// Shows the window. `reason` is logged: this app is a background tool
+    /// first, so an unexplained window appearing over the user's work is a bug,
+    /// and the log is how we find out which path did it.
+    func show(section: Section = .history, reason: String = "unspecified") {
+        Log.write("window  show (\(reason))")
         if window == nil { build() }
         AppState.shared.section = section
 
         NSApp.setActivationPolicy(.regular)
         installMainMenu()
+        if window?.isVisible != true { window?.center() }
         window?.makeKeyAndOrderFront(nil)
-        window?.center()
-        NSApp.activate(ignoringOtherApps: true)
+        // NOT ignoringOtherApps: that yanks focus away from whatever the user
+        // is typing in. Ordinary activation lets macOS decide politely.
+        NSApp.activate()
     }
 
     func windowWillClose(_ notification: Notification) {
@@ -35,10 +41,18 @@ final class MainWindow: NSObject, NSWindowDelegate {
             defer: false
         )
         w.title = "Yapperroni"
-        w.titlebarAppearsTransparent = false
+        w.titlebarAppearsTransparent = true
         w.isReleasedWhenClosed = false
-        w.minSize = NSSize(width: 720, height: 460)
+        w.minSize = NSSize(width: 640, height: 460)
+        // Follow the user between desktops. Without this the window stays on
+        // whichever Space it was opened on, and reopening from the menu bar
+        // silently does nothing visible.
+        w.collectionBehavior = [.moveToActiveSpace, .fullScreenAuxiliary]
         w.delegate = self
+        // The brief is a plain white canvas — force light appearance so it
+        // never flips to a dark titlebar/window chrome under system dark mode.
+        w.appearance = NSAppearance(named: .aqua)
+        w.backgroundColor = .white
         w.contentView = NSHostingView(rootView: ContentView())
         window = w
     }
@@ -83,20 +97,12 @@ final class MainWindow: NSObject, NSWindowDelegate {
 }
 
 enum Section: String, CaseIterable, Identifiable {
-    case history, settings, stats
+    case history, settings
     var id: String { rawValue }
     var label: String {
         switch self {
         case .history:  return "History"
         case .settings: return "Settings"
-        case .stats:    return "Stats"
-        }
-    }
-    var icon: String {
-        switch self {
-        case .history:  return "clock.arrow.circlepath"
-        case .settings: return "gearshape"
-        case .stats:    return "chart.bar"
         }
     }
 }

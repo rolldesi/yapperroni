@@ -30,6 +30,29 @@ final class Whisper {
         }
     }
 
+    /// Whisper has no word list to update — it is end-to-end, and its sense of
+    /// which words exist comes from training data that predates the model's
+    /// release. It does, however, condition on an initial prompt, so naming
+    /// your jargon there biases the decoder toward it. Kept short: the prompt
+    /// competes with the audio for the decoder's context.
+    private static func promptText() -> String? {
+        let raw = Settings.shared.customVocabulary.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !raw.isEmpty else { return nil }
+        let terms = raw
+            .split(whereSeparator: { $0 == "\n" || $0 == "," })
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+        guard !terms.isEmpty else { return nil }
+        // Cap it: the prompt shares the decoder's context with the audio, and
+        // an overlong glossary starts costing accuracy instead of adding it.
+        var out = "Glossary: "
+        for t in terms {
+            if out.count + t.count > 380 { break }
+            out += t + ", "
+        }
+        return out.hasSuffix(", ") ? String(out.dropLast(2)) + "." : out
+    }
+
     /// Blocking. `samples` must be 16 kHz mono float32 in [-1, 1].
     func transcribe(_ samples: [Float]) -> String {
         queue.sync {
@@ -57,8 +80,20 @@ final class Whisper {
             p.temperature      = 0.0
             p.no_speech_thold  = 0.6
 
-            let rc = pcm.withUnsafeBufferPointer { buf in
-                whisper_full(ctx, p, buf.baseAddress, Int32(buf.count))
+            // The prompt C string must outlive the call, hence the nesting.
+            let rc: Int32
+            if let prompt = Whisper.promptText() {
+                rc = prompt.withCString { cstr in
+                    var pp = p
+                    pp.initial_prompt = cstr
+                    return pcm.withUnsafeBufferPointer { buf in
+                        whisper_full(ctx, pp, buf.baseAddress, Int32(buf.count))
+                    }
+                }
+            } else {
+                rc = pcm.withUnsafeBufferPointer { buf in
+                    whisper_full(ctx, p, buf.baseAddress, Int32(buf.count))
+                }
             }
             guard rc == 0 else { return "" }
 

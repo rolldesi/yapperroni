@@ -50,6 +50,18 @@ final class Recorder {
         guard !isRecording else { return }
 
         let input = engine.inputNode
+
+        // Apple's voice-processing unit: echo cancellation, noise suppression
+        // and gain control, the same path FaceTime uses. This is what lets
+        // Whisper hear speech over background music. It must be set before the
+        // engine starts, and it CHANGES the node's format — which is why the
+        // tap format is read afterwards, not before.
+        let wantVP = Settings.shared.voiceIsolation
+        if input.isVoiceProcessingEnabled != wantVP {
+            do { try input.setVoiceProcessingEnabled(wantVP) }
+            catch { Log.write("audio   voice processing unavailable: \(error.localizedDescription)") }
+        }
+
         let tapF = input.outputFormat(forBus: 0)
         guard tapF.sampleRate > 0, tapF.channelCount > 0 else { throw RecorderError.noInput }
 
@@ -94,8 +106,8 @@ final class Recorder {
         isRecording = false
         engine.inputNode.removeTap(onBus: 0)
         engine.stop()
-        converter = nil
-        monoFormat = nil
+        // Deliberately NOT clearing converter/monoFormat: a tap callback may
+        // still be mid-flight and reads both. start() replaces them anyway.
         level = 0
         lock.lock(); let out = samples; samples.removeAll(); lock.unlock()
         return out

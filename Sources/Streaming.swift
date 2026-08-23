@@ -26,7 +26,13 @@ final class StreamingTranscriber {
 
     private var previous: [String] = []
     private var emitted: [String] = []
-    private var running = false
+    private var runningLock = NSLock()
+    private var _running = false
+    /// Read on the streaming queue, written from whichever thread stops it.
+    private var running: Bool {
+        get { runningLock.lock(); defer { runningLock.unlock() }; return _running }
+        set { runningLock.lock(); _running = newValue; runningLock.unlock() }
+    }
     private let queue = DispatchQueue(label: "yapperroni.streaming", qos: .userInitiated)
     /// Signalled on stop, so the loop wakes immediately instead of sitting out
     /// the rest of its interval. Without this, releasing the key mid-sleep adds
@@ -82,7 +88,7 @@ final class StreamingTranscriber {
 
         let final = StreamingTranscriber.words(whisper.transcribe(pcm))
 
-        if let tail = alignedTail(final) {
+        if let tail = StreamingTranscriber.tailAfter(emitted: emitted, final: final) {
             emit(tail)
         } else {
             // Alignment failed: the final pass segmented the speech differently
@@ -101,27 +107,35 @@ final class StreamingTranscriber {
     ///
     /// Counting words does not work: real speech re-segments between passes
     /// ("gonna" becoming "going to", filler appearing and vanishing), and an
-    /// index slice then either skips real words or repeats typed ones. Instead
-    /// find where the already-typed text ends inside the final transcript.
+    /// index slice then either skips real words or retypes ones already shown.
+    /// So locate where the already-typed text ends inside the final transcript.
     ///
-    /// Scanned from the END on purpose. "…for you, ask what you can do for your
-    /// country" repeats "for you"; matching forwards would land on the first
-    /// occurrence and re-type everything after it.
-    private func alignedTail(_ final: [String]) -> [String]? {
+    /// The anchor can legitimately appear more than once — "for you … for your
+    /// country", or someone saying "go go go go". Taking the last match drops
+    /// the real repeats; taking the first duplicates everything after it.
+    /// Instead take the match ending CLOSEST to how many words we have already
+    /// emitted, which is our best estimate of where we actually are.
+    ///
+    /// Static and pure so it can be tested directly — see `--selftest-align`.
+    static func tailAfter(emitted: [String], final: [String]) -> [String]? {
         guard !emitted.isEmpty else { return final }
         let k = min(4, emitted.count)
-        let needle = emitted.suffix(k).map(StreamingTranscriber.normalize)
-        let hay = final.map(StreamingTranscriber.normalize)
+        let needle = emitted.suffix(k).map(normalize)
+        let hay = final.map(normalize)
         guard hay.count >= needle.count else { return nil }
 
-        var i = hay.count - needle.count
-        while i >= 0 {
-            if Array(hay[i ..< i + needle.count]) == needle {
-                return Array(final[(i + needle.count)...])
+        var bestEnd: Int?
+        var bestDistance = Int.max
+        for i in 0...(hay.count - needle.count) where Array(hay[i ..< i + needle.count]) == needle {
+            let end = i + needle.count
+            let distance = abs(end - emitted.count)
+            if distance < bestDistance {
+                bestDistance = distance
+                bestEnd = end
             }
-            i -= 1
         }
-        return nil
+        guard let end = bestEnd else { return nil }
+        return Array(final[end...])
     }
 
     func cancel() {

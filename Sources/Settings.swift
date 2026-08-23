@@ -80,6 +80,14 @@ final class Settings: ObservableObject {
     /// even when nothing was focused to type into.
     @Published var copyToClipboard: Bool       { didSet { d.set(copyToClipboard, forKey: "copyToClipboard") } }
     @Published var trailingSpace: Bool         { didSet { d.set(trailingSpace, forKey: "trailingSpace") } }
+    /// Apple's voice-processing unit on the input node: echo cancellation,
+    /// noise suppression and automatic gain. Helps Whisper hear you over music
+    /// and room noise. Takes effect on the next dictation.
+    @Published var voiceIsolation: Bool        { didSet { d.set(voiceIsolation, forKey: "voiceIsolation") } }
+    /// Words and names to prime the decoder with. Whisper has no dictionary to
+    /// update, but it conditions on an initial prompt, so listing your jargon
+    /// here biases recognition toward it.
+    @Published var customVocabulary: String    { didSet { d.set(customVocabulary, forKey: "customVocabulary") } }
     @Published var soundFeedback: Bool         { didSet { d.set(soundFeedback, forKey: "soundFeedback") } }
     @Published var historyEnabled: Bool        { didSet { d.set(historyEnabled, forKey: "historyEnabled") } }
     @Published var historyLimit: Int           { didSet { d.set(historyLimit, forKey: "historyLimit") } }
@@ -106,6 +114,8 @@ final class Settings: ObservableObject {
             "hudPosition": HUDPosition.bottom.rawValue,
             "copyToClipboard": true,
             "trailingSpace": true,
+            "voiceIsolation": true,
+            "customVocabulary": "",
             "soundFeedback": false,
             "lockEnabled": true,
             "liveTranscription": true,
@@ -125,6 +135,8 @@ final class Settings: ObservableObject {
         hudPosition      = HUDPosition(rawValue: d.string(forKey: "hudPosition") ?? "") ?? .bottom
         copyToClipboard  = d.bool(forKey: "copyToClipboard")
         trailingSpace    = d.bool(forKey: "trailingSpace")
+        voiceIsolation   = d.bool(forKey: "voiceIsolation")
+        customVocabulary = d.string(forKey: "customVocabulary") ?? ""
         soundFeedback    = d.bool(forKey: "soundFeedback")
         historyEnabled   = d.bool(forKey: "historyEnabled")
         historyLimit     = d.integer(forKey: "historyLimit")
@@ -189,6 +201,8 @@ final class Settings: ObservableObject {
         hudPosition      = .bottom
         copyToClipboard  = true
         trailingSpace    = true
+        voiceIsolation   = true
+        customVocabulary = ""
         soundFeedback    = false
         historyEnabled   = true
         historyLimit     = 500

@@ -57,7 +57,9 @@ enum Injector {
             [.permitLocalMouseEvents, .permitLocalKeyboardEvents],
             state: .eventSuppressionStateSuppressionInterval
         )
-        for chunk in Array(text.utf16).chunked(into: 16) {
+        // Chunk by character, not by UTF-16 unit: splitting a surrogate pair
+        // mid-chunk delivers half an emoji and the app shows a replacement char.
+        for chunk in text.map(String.init).chunked(into: 16).map({ Array($0.joined().utf16) }) {
             guard let down = CGEvent(keyboardEventSource: src, virtualKey: 0, keyDown: true),
                   let up   = CGEvent(keyboardEventSource: src, virtualKey: 0, keyDown: false)
             else { continue }
@@ -77,6 +79,9 @@ enum Injector {
         let pb = NSPasteboard.general
         // ponytail: string-only clipboard save/restore. Deep-copy every
         // NSPasteboardItem if this ever eats someone's copied image.
+        // Only a string can be restored. If the clipboard held something else
+        // (an image, a file), leave it alone entirely rather than clearing it —
+        // clearing is worse than not restoring.
         let saved = pb.string(forType: .string)
 
         pb.clearContents()
@@ -87,11 +92,11 @@ enum Injector {
             postCommandV()
             // Give the target app time to read the pasteboard before we put
             // the old contents back.
-            guard restoreClipboard else { return }
+            guard restoreClipboard, let saved else { return }
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
                 guard pb.changeCount == stamp else { return } // user copied since; leave it
                 pb.clearContents()
-                if let saved { pb.setString(saved, forType: .string) }
+                pb.setString(saved, forType: .string)
             }
         }
     }
@@ -99,7 +104,11 @@ enum Injector {
     /// Our HUD is non-activating, but a stray click or app switch during
     /// dictation can still move focus. Put it back before pasting.
     private static func restoreFocus(_ target: NSRunningApplication?, then: @escaping () -> Void) {
+        // Never activate ourselves: if Yapperroni happened to be frontmost when
+        // dictation started, activating it here pulls our window over the
+        // user's work after every utterance.
         guard let target, !target.isTerminated,
+              target.processIdentifier != NSRunningApplication.current.processIdentifier,
               target.processIdentifier != NSWorkspace.shared.frontmostApplication?.processIdentifier
         else { return then() }
 

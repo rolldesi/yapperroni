@@ -23,6 +23,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// interleaves two Injector calls, and the second saves the first one's
     /// pasted text as the "original" clipboard to restore.
     private var isTranscribing = false
+    private let launchedAt = Date()
     private var streamer: StreamingTranscriber?
     /// Serial, so live chunks reach the target app in the order they settled.
     private let typeQueue = DispatchQueue(label: "yapperroni.typing")
@@ -34,8 +35,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if let other = NSRunningApplication
             .runningApplications(withBundleIdentifier: Bundle.main.bundleIdentifier ?? "")
             .first(where: { $0.processIdentifier != NSRunningApplication.current.processIdentifier }) {
-            Log.write("launch  another Yapperroni is already running (pid \(other.processIdentifier)); handing over")
-            other.activate()
+            // Exit quietly. Activating the running instance would drag it in
+            // front of whatever the user is doing, which is exactly the
+            // interruption this app must never cause.
+            Log.write("launch  another Yapperroni is already running (pid \(other.processIdentifier)); exiting quietly")
             NSApp.terminate(nil)
             return
         }
@@ -71,14 +74,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         if let arg = CommandLine.arguments.first(where: { $0.hasPrefix("--open-window") }) {
             let name = arg.split(separator: "=").last.map(String.init) ?? ""
-            MainWindow.shared.show(section: Section(rawValue: name) ?? .history)
+            MainWindow.shared.show(section: Section(rawValue: name) ?? .history, reason: "launch flag")
         } else if !UserDefaults.standard.bool(forKey: "hasLaunchedBefore") {
             // Yapperroni has no Dock icon and opens no window, so a first launch
             // with nothing on screen reads as "it didn't start". Show what it
             // needs and why, before macOS throws its own permission dialogs.
             UserDefaults.standard.set(true, forKey: "hasLaunchedBefore")
             state.showWelcome = true
-            MainWindow.shared.show(section: .history)
+            MainWindow.shared.show(section: .history, reason: "first run")
         }
 
         Log.write("launch  accessibility=\(state.accessibilityGranted) tap=\(hotkey.isActive) "
@@ -94,8 +97,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Double-clicking an already-running LSUIElement app fires this and
     /// nothing else. Without it, the app can never be reopened from Finder.
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
-        if !flag { MainWindow.shared.show(section: .history) }
+        // Only a real user gesture should open the window. macOS also sends
+        // this for launches that are not a click — a second `open` of an
+        // already-running app, Launch Services re-registering it — and honoring
+        // those is why the window kept appearing unbidden.
+        guard !flag, launchedLongEnoughAgo else {
+            Log.write("window  reopen ignored (visibleWindows=\(flag))")
+            return true
+        }
+        MainWindow.shared.show(section: .history, reason: "dock/finder reopen")
         return true
+    }
+
+    /// Reopen events arriving in the first moments after launch are startup
+    /// noise, not someone clicking the icon.
+    private var launchedLongEnoughAgo: Bool {
+        Date().timeIntervalSince(launchedAt) > 3.0
     }
 
     func applicationWillTerminate(_ note: Notification) {
@@ -285,6 +302,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // MARK: - Setup
 
     private func startHotkey() {
+        // Rebinding while a key is held would otherwise strand the recorder:
+        // the release event arrives for a binding the tap no longer watches, so
+        // no deactivate ever reaches endDictation and capture runs forever.
+        if recorder.isRecording { endDictation() }
+
         let live = hotkey.start(push: settings.binding,
                                 lock: settings.lockBinding,
                                 lockEnabled: settings.lockEnabled,
@@ -386,9 +408,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(item)
     }
 
-    @objc private func openWindow()   { MainWindow.shared.show(section: .history) }
-    @objc private func openHistory()  { MainWindow.shared.show(section: .history) }
-    @objc private func openSettings() { MainWindow.shared.show(section: .settings) }
+    @objc private func openWindow()   { MainWindow.shared.show(section: .history,  reason: "menu") }
+    @objc private func openHistory()  { MainWindow.shared.show(section: .history,  reason: "menu") }
+    @objc private func openSettings() { MainWindow.shared.show(section: .settings, reason: "menu") }
 
     @objc private func toggleLogin() {
         settings.launchAtLogin.toggle()

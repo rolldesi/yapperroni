@@ -1,37 +1,69 @@
 import SwiftUI
 import AppKit
 
+// A plain white canvas, forced regardless of system appearance — the brief
+// asked for this twice. Two tabs, nothing else.
+
 struct ContentView: View {
     @ObservedObject private var state = AppState.shared
 
     var body: some View {
         if state.showWelcome {
             WelcomeView()
+                .preferredColorScheme(.light)
         } else {
-            main
+            VStack(spacing: 0) {
+                TabBar()
+                Divider()
+                Group {
+                    switch state.section {
+                    case .history:  HistoryView()
+                    case .settings: SettingsView()
+                    }
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+            .background(Color.white)
+            .preferredColorScheme(.light)
         }
     }
+}
 
-    private var main: some View {
-        NavigationSplitView {
-            List(Section.allCases, selection: Binding(
-                get: { state.section },
-                set: { state.section = $0 ?? .history }
-            )) { section in
-                Label(section.label, systemImage: section.icon).tag(section)
-            }
-            .navigationSplitViewColumnWidth(min: 170, ideal: 190, max: 240)
-        } detail: {
-            Group {
-                switch state.section {
-                case .history:  HistoryView()
-                case .settings: SettingsView()
-                case .stats:    StatsView()
+private struct TabBar: View {
+    @ObservedObject private var state = AppState.shared
+
+    var body: some View {
+        ZStack {
+            HStack(spacing: 32) {
+                ForEach(Section.allCases) { section in
+                    tab(section)
                 }
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            HStack {
+                Spacer()
+                StatusPill().padding(.trailing, 20)
+            }
         }
-        .toolbar { ToolbarItem(placement: .status) { StatusPill() } }
+        .padding(.top, 22)
+        .padding(.bottom, 14)
+        .background(Color.white)
+    }
+
+    private func tab(_ section: Section) -> some View {
+        let active = state.section == section
+        return Button {
+            state.section = section
+        } label: {
+            VStack(spacing: 7) {
+                Text(section.label)
+                    .font(.system(size: 14, weight: active ? .semibold : .regular))
+                    .foregroundStyle(active ? Color.black : Color.black.opacity(0.4))
+                Rectangle()
+                    .fill(active ? Color.black : Color.clear)
+                    .frame(width: 20, height: 2)
+            }
+        }
+        .buttonStyle(.plain)
     }
 }
 
@@ -46,7 +78,7 @@ private struct StatusPill: View {
           :                               ("Ready", .green)
 
         HStack(spacing: 6) {
-            Circle().fill(color).frame(width: 8, height: 8)
+            Circle().fill(color).frame(width: 6, height: 6)
             Text(text).font(.caption).foregroundStyle(.secondary)
         }
     }
@@ -59,41 +91,30 @@ struct HistoryView: View {
     @State private var query = ""
     @State private var selection = Set<UUID>()
     @State private var confirmClear = false
+    @State private var hovering: UUID?
 
     private var rows: [Utterance] { store.filtered(query) }
 
     var body: some View {
         VStack(spacing: 0) {
+            header
+            Divider()
+
             if store.entries.isEmpty {
                 empty
             } else {
-                List(rows, selection: $selection) { u in
-                    row(u).tag(u.id)
+                ScrollView {
+                    LazyVStack(spacing: 0) {
+                        ForEach(rows) { u in
+                            row(u)
+                            Divider().padding(.leading, 20)
+                        }
+                    }
                 }
-                .listStyle(.inset)
+                summary
             }
         }
-        .searchable(text: $query, placement: .toolbar, prompt: "Search transcripts")
-        .toolbar {
-            ToolbarItemGroup {
-                Button {
-                    copy(rows.filter { selection.contains($0.id) }
-                            .map(\.text).joined(separator: "\n"))
-                } label: { Label("Copy", systemImage: "doc.on.doc") }
-                .disabled(selection.isEmpty)
-                .help("Copy selected transcripts")
-
-                Button {
-                    store.delete(selection); selection.removeAll()
-                } label: { Label("Delete", systemImage: "trash") }
-                .disabled(selection.isEmpty)
-
-                Menu {
-                    Button("Copy All") { copy(store.exportText()) }
-                    Button("Clear History…", role: .destructive) { confirmClear = true }
-                } label: { Label("More", systemImage: "ellipsis.circle") }
-            }
-        }
+        .background(Color.white)
         .confirmationDialog("Delete all \(store.entries.count) transcripts?",
                             isPresented: $confirmClear, titleVisibility: .visible) {
             Button("Delete All", role: .destructive) { store.clear(); selection.removeAll() }
@@ -103,34 +124,125 @@ struct HistoryView: View {
         }
     }
 
-    private func row(_ u: Utterance) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(u.text)
-                .font(.body)
-                .textSelection(.enabled)
-                .lineLimit(4)
-            HStack(spacing: 10) {
-                Text(u.date, format: .dateTime.month().day().hour().minute())
-                Text(u.appName)
-                Text("\(u.wordCount)w")
-                Text(String(format: "%.1fs audio · %.1fs decode", u.duration, u.latency))
-            }
-            .font(.caption)
-            .foregroundStyle(.secondary)
+    private var header: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            Text("History")
+                .font(.system(size: 26, weight: .semibold))
+                .foregroundStyle(.black)
+
+            searchBar
         }
-        .padding(.vertical, 4)
+        .padding(.horizontal, 24)
+        .padding(.top, 4)
+        .padding(.bottom, 16)
+    }
+
+    private var searchBar: some View {
+        HStack(spacing: 12) {
+            HStack(spacing: 8) {
+                Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
+                TextField("Search transcripts", text: $query)
+                    .textFieldStyle(.plain)
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 7)
+            .background(Color.black.opacity(0.035), in: RoundedRectangle(cornerRadius: 7))
+
+            if !selection.isEmpty {
+                Button {
+                    copy(rows.filter { selection.contains($0.id) }.map(\.text).joined(separator: "\n"))
+                } label: { Image(systemName: "doc.on.doc") }
+                .help("Copy selected")
+                Button(role: .destructive) {
+                    store.delete(selection); selection.removeAll()
+                } label: { Image(systemName: "trash") }
+                .help("Delete selected")
+            }
+
+            Menu {
+                Button("Copy All") { copy(store.exportText()) }
+                Button("Clear History…", role: .destructive) { confirmClear = true }
+            } label: { Image(systemName: "ellipsis.circle") }
+            .menuStyle(.borderlessButton)
+            .fixedSize()
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(.secondary)
+    }
+
+    private func row(_ u: Utterance) -> some View {
+        HStack(alignment: .top, spacing: 12) {
+            if !selection.isEmpty || hovering == u.id {
+                Button {
+                    if selection.contains(u.id) { selection.remove(u.id) } else { selection.insert(u.id) }
+                } label: {
+                    Image(systemName: selection.contains(u.id) ? "checkmark.circle.fill" : "circle")
+                        .foregroundStyle(selection.contains(u.id) ? Color.accentColor : Color.black.opacity(0.25))
+                }
+                .buttonStyle(.plain)
+                .padding(.top, 2)
+            } else {
+                Color.clear.frame(width: 14)
+            }
+
+            VStack(alignment: .leading, spacing: 5) {
+                Text(u.text)
+                    .font(.system(size: 14))
+                    .foregroundStyle(.black)
+                    .textSelection(.enabled)
+                    .lineLimit(4)
+                HStack(spacing: 10) {
+                    Text(u.date, format: .dateTime.month().day().hour().minute())
+                    Text("·").foregroundStyle(.tertiary)
+                    Text(u.appName)
+                    Text("·").foregroundStyle(.tertiary)
+                    Text("\(u.wordCount) words")
+                }
+                .font(.system(size: 11.5))
+                .foregroundStyle(.secondary)
+            }
+
+            Spacer(minLength: 8)
+
+            if hovering == u.id {
+                HStack(spacing: 14) {
+                    Button { copy(u.text) } label: { Image(systemName: "doc.on.doc") }
+                    Button(role: .destructive) { store.delete([u.id]) } label: { Image(systemName: "trash") }
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(.secondary)
+            }
+        }
+        .padding(.horizontal, 24)
+        .padding(.vertical, 12)
+        .background(hovering == u.id ? Color.black.opacity(0.025) : Color.clear)
+        .onHover { hovering = $0 ? u.id : (hovering == u.id ? nil : hovering) }
         .contextMenu {
             Button("Copy") { copy(u.text) }
             Button("Delete", role: .destructive) { store.delete([u.id]) }
         }
     }
 
+    private var summary: some View {
+        HStack {
+            Text("\(store.entries.count) dictations · \(store.totalWords) words")
+            Spacer()
+            if store.minutesSaved > 0 {
+                Text(String(format: "~%.0f min saved vs. typing", store.minutesSaved))
+            }
+        }
+        .font(.system(size: 11))
+        .foregroundStyle(.tertiary)
+        .padding(.horizontal, 24)
+        .padding(.vertical, 10)
+    }
+
     private var empty: some View {
         VStack(spacing: 10) {
-            Image(systemName: "waveform").font(.system(size: 42)).foregroundStyle(.tertiary)
-            Text("No dictations yet").font(.title3)
+            Image(systemName: "waveform").font(.system(size: 36)).foregroundStyle(.tertiary)
+            Text("No dictations yet").font(.system(size: 15, weight: .medium)).foregroundStyle(.black)
             Text("Hold \(Settings.shared.binding.displayName) and speak.")
-                .foregroundStyle(.secondary)
+                .font(.system(size: 13)).foregroundStyle(.secondary)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
@@ -150,133 +262,174 @@ struct SettingsView: View {
     @StateObject private var tester = MicTester()
 
     var body: some View {
-        Form {
-            SwiftUI.Section("Push to talk") {
-                KeyRecorderField(title: "Hold to dictate",
-                                 binding: $settings.binding,
-                                 conflictsWith: settings.lockEnabled ? settings.lockBinding : nil,
-                                 allowBareModifier: true)
-                Picker("Mode", selection: $settings.activation) {
-                    ForEach(ActivationMode.allCases) { Text($0.label).tag($0) }
-                }
-                Text("A modifier held on its own, or a function key. A plain letter cannot be used — it would type into whatever app you are dictating into.")
-                    .font(.caption).foregroundStyle(.secondary)
-            }
+        ScrollView {
+            VStack(alignment: .leading, spacing: 36) {
+                Text("Settings")
+                    .font(.system(size: 26, weight: .semibold))
+                    .foregroundStyle(.black)
+                    .padding(.top, 4)
 
-            SwiftUI.Section("Hands-free lock") {
-                Toggle("Enable the lock shortcut", isOn: $settings.lockEnabled)
-                KeyRecorderField(title: "Lock",
-                                 binding: $settings.lockBinding,
-                                 conflictsWith: settings.binding,
-                                 allowBareModifier: false)
-                    .disabled(!settings.lockEnabled)
-                Text("Press once to start recording hands-free, press again to stop — no need to keep holding. It must include a modifier, because Yapperroni swallows this combination so it does not also type.")
-                    .font(.caption).foregroundStyle(.secondary)
-            }
-
-            SwiftUI.Section("Output") {
-                Toggle("Live transcription", isOn: $settings.liveTranscription)
-                Text("Types each word as soon as it settles, instead of inserting everything when you stop. Words appear about a second behind you.")
-                    .font(.caption).foregroundStyle(.secondary)
-
-                if settings.liveTranscription {
-                    Text("Live mode always types character by character, so the output mode below does not apply. Typing also avoids terminals collapsing an insert into “[Pasted text]”.")
-                        .font(.caption).foregroundStyle(.secondary)
-                } else {
-                    Picker("When finished", selection: $settings.output) {
-                        ForEach(OutputMode.allCases) { Text($0.label).tag($0) }
+                group("Shortcuts") {
+                    KeyRecorderField(title: "Hold to dictate",
+                                     binding: $settings.binding,
+                                     conflictsWith: settings.lockEnabled ? settings.lockBinding : nil,
+                                     allowBareModifier: true)
+                    Picker("Mode", selection: $settings.activation) {
+                        ForEach(ActivationMode.allCases) { Text($0.label).tag($0) }
                     }
-                    Text(settings.output.detail).font(.caption).foregroundStyle(.secondary)
-                }
-                Toggle("Add a trailing space", isOn: $settings.trailingSpace)
-            }
+                    hint("A modifier held on its own, or a function key. A plain letter cannot be used — it would type into whatever app you are dictating into.")
 
-            SwiftUI.Section("Model") {
-                Picker("Model", selection: $settings.modelFilename) {
-                    ForEach(settings.availableModels, id: \.self) { Text($0).tag($0) }
+                    Divider().padding(.vertical, 4)
+
+                    Toggle("Enable hands-free lock", isOn: $settings.lockEnabled)
+                    KeyRecorderField(title: "Lock combo",
+                                     binding: $settings.lockBinding,
+                                     conflictsWith: settings.binding,
+                                     allowBareModifier: false)
+                        .disabled(!settings.lockEnabled)
+                    hint("Press once to start recording hands-free, press again to stop. It must include a modifier, because Yapperroni swallows this combination so it does not also type.")
                 }
-                HStack {
-                    Text("Drop more `.bin` models into the support folder to see them here.")
-                        .font(.caption).foregroundStyle(.secondary)
-                    Spacer()
-                    Button("Reveal") {
-                        NSWorkspace.shared.selectFile(nil, inFileViewerRootedAtPath: Config.supportDir.path)
+
+                group("Output") {
+                    Toggle("Live transcription", isOn: $settings.liveTranscription)
+                    hint("Types each word as soon as it settles, instead of inserting everything when you stop. Words appear about a second behind you.")
+
+                    if settings.liveTranscription {
+                        hint("Live mode always types character by character, so the output mode below does not apply.")
+                    } else {
+                        Picker("When finished", selection: $settings.output) {
+                            ForEach(OutputMode.allCases) { Text($0.label).tag($0) }
+                        }
+                        hint(settings.output.detail)
                     }
+                    Toggle("Add a trailing space", isOn: $settings.trailingSpace)
+                    Toggle("Copy each transcript to the clipboard", isOn: $settings.copyToClipboard)
+                    hint("So you can paste it anywhere, even if no text field was focused.")
                 }
-            }
 
-            SwiftUI.Section("Silence gate") {
-                VStack(alignment: .leading) {
+                group("Model") {
+                    Picker("Model", selection: $settings.modelFilename) {
+                        ForEach(settings.availableModels, id: \.self) { Text($0).tag($0) }
+                    }
                     HStack {
-                        Text("Minimum loudness")
+                        hint("Drop more `.bin` models into the support folder to see them here.")
                         Spacer()
-                        Text(String(format: "%.4f", settings.minPeakRMS))
-                            .monospacedDigit().foregroundStyle(.secondary)
+                        Button("Reveal") {
+                            NSWorkspace.shared.selectFile(nil, inFileViewerRootedAtPath: Config.supportDir.path)
+                        }
                     }
-                    Slider(value: $settings.minPeakRMS, in: 0.0001...0.02)
                 }
-                VStack(alignment: .leading) {
+
+                group("Silence gate") {
+                    Toggle("Filter background noise", isOn: $settings.voiceIsolation)
+                    hint("Uses Apple's voice processing to hear you over music and room noise. Applies to your next dictation.")
+
+                    Divider().padding(.vertical, 4)
+
+                    VStack(alignment: .leading, spacing: 6) {
+                        HStack {
+                            Text("Minimum loudness")
+                            Spacer()
+                            Text(String(format: "%.4f", settings.minPeakRMS))
+                                .monospacedDigit().foregroundStyle(.secondary)
+                        }
+                        Slider(value: $settings.minPeakRMS, in: 0.0001...0.02)
+                    }
+                    VStack(alignment: .leading, spacing: 6) {
+                        HStack {
+                            Text("Minimum length")
+                            Spacer()
+                            Text(String(format: "%.2fs", settings.minSpeechSeconds))
+                                .monospacedDigit().foregroundStyle(.secondary)
+                        }
+                        Slider(value: $settings.minSpeechSeconds, in: 0.05...2.0)
+                    }
                     HStack {
-                        Text("Minimum length")
+                        Button(tester.running ? "Listening…" : "Test microphone") { tester.run() }
+                            .disabled(tester.running)
+                        if let r = tester.result {
+                            Text(r).font(.caption).foregroundStyle(tester.passed ? .green : .orange)
+                        }
+                    }
+                    hint("Quieter input is dropped rather than sent to the model — Whisper invents confident sentences out of silence.")
+                }
+
+                group("Vocabulary") {
+                    Text("Words to listen for").font(.system(size: 13, weight: .medium))
+                    TextEditor(text: $settings.customVocabulary)
+                        .font(.system(size: 12.5, design: .monospaced))
+                        .frame(height: 92)
+                        .padding(8)
+                        .background(Color.black.opacity(0.035), in: RoundedRectangle(cornerRadius: 8))
+                        .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(Color.black.opacity(0.06)))
+                    hint("Names and jargon the model gets wrong — one per line, or comma separated. Whisper has no dictionary to update, so these are used to prime it.")
+                }
+
+                group("Appearance & feedback") {
+                    Picker("Status pill", selection: $settings.hudPosition) {
+                        ForEach(HUDPosition.allCases) { Text($0.label).tag($0) }
+                    }
+                    Toggle("Play a sound when dictation starts and stops", isOn: $settings.soundFeedback)
+                }
+
+                group("History") {
+                    Toggle("Keep a history of transcripts", isOn: $settings.historyEnabled)
+                    Stepper("Keep the last \(settings.historyLimit)",
+                            value: $settings.historyLimit, in: 25...5000, step: 25)
+                        .disabled(!settings.historyEnabled)
+                }
+
+                group("System") {
+                    Toggle("Launch at login", isOn: Binding(
+                        get: { settings.launchAtLogin },
+                        set: { settings.launchAtLogin = $0 }
+                    ))
+                    HStack {
+                        Circle()
+                            .fill(state.accessibilityGranted ? Color.green : Color.orange)
+                            .frame(width: 8, height: 8)
+                        Text(state.accessibilityGranted
+                             ? "Accessibility granted"
+                             : "Accessibility required for the hotkey and pasting")
+                            .foregroundStyle(.secondary)
                         Spacer()
-                        Text(String(format: "%.2fs", settings.minSpeechSeconds))
-                            .monospacedDigit().foregroundStyle(.secondary)
+                        Button("Open Settings…") {
+                            NSWorkspace.shared.open(URL(string:
+                                "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")!)
+                        }
                     }
-                    Slider(value: $settings.minSpeechSeconds, in: 0.05...2.0)
-                }
-                HStack {
-                    Button(tester.running ? "Listening…" : "Test microphone") { tester.run() }
-                        .disabled(tester.running)
-                    if let r = tester.result {
-                        Text(r).font(.caption).foregroundStyle(tester.passed ? .green : .orange)
+                    HStack {
+                        Button("Reveal Diagnostic Log") {
+                            NSWorkspace.shared.selectFile(Log.path, inFileViewerRootedAtPath: Config.supportDir.path)
+                        }
+                        Spacer()
+                        Button("Reset All Settings") { settings.resetToDefaults() }
                     }
                 }
-                Text("Quieter input is dropped rather than sent to the model — Whisper invents confident sentences out of silence.")
-                    .font(.caption).foregroundStyle(.secondary)
             }
+            .padding(28)
+            .frame(maxWidth: 560, alignment: .leading)
+            .frame(maxWidth: .infinity)
+        }
+        .background(Color.white)
+    }
 
-            SwiftUI.Section("Appearance") {
-                Picker("Status pill", selection: $settings.hudPosition) {
-                    ForEach(HUDPosition.allCases) { Text($0.label).tag($0) }
-                }
-                Toggle("Play a sound when dictation starts and stops", isOn: $settings.soundFeedback)
-            }
-
-            SwiftUI.Section("History") {
-                Toggle("Keep a history of transcripts", isOn: $settings.historyEnabled)
-                Stepper("Keep the last \(settings.historyLimit)",
-                        value: $settings.historyLimit, in: 25...5000, step: 25)
-                    .disabled(!settings.historyEnabled)
-            }
-
-            SwiftUI.Section("System") {
-                Toggle("Launch at login", isOn: Binding(
-                    get: { settings.launchAtLogin },
-                    set: { settings.launchAtLogin = $0 }
-                ))
-                HStack {
-                    Circle()
-                        .fill(state.accessibilityGranted ? Color.green : Color.orange)
-                        .frame(width: 8, height: 8)
-                    Text(state.accessibilityGranted
-                         ? "Accessibility granted"
-                         : "Accessibility required for the hotkey and pasting")
-                    Spacer()
-                    Button("Open Settings…") {
-                        NSWorkspace.shared.open(URL(string:
-                            "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")!)
-                    }
-                }
-                HStack {
-                    Button("Reveal Diagnostic Log") {
-                        NSWorkspace.shared.selectFile(Log.path, inFileViewerRootedAtPath: Config.supportDir.path)
-                    }
-                    Spacer()
-                    Button("Reset All Settings") { settings.resetToDefaults() }
-                }
+    /// Whitespace and a soft tint separate groups — no boxes inside boxes.
+    private func group<Content: View>(_ title: String, @ViewBuilder content: () -> Content) -> some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text(title)
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundStyle(.black.opacity(0.85))
+            VStack(alignment: .leading, spacing: 12) {
+                content()
             }
         }
-        .formStyle(.grouped)
+        .padding(18)
+        .background(Color.black.opacity(0.02), in: RoundedRectangle(cornerRadius: 12))
+    }
+
+    private func hint(_ s: String) -> some View {
+        Text(s).font(.system(size: 11.5)).foregroundStyle(.secondary)
     }
 }
 
@@ -306,46 +459,5 @@ final class MicTester: ObservableObject {
                                  self.passed ? "above the gate" : "below the gate")
             self.running = false
         }
-    }
-}
-
-// MARK: - Stats
-
-struct StatsView: View {
-    @ObservedObject private var store = HistoryStore.shared
-
-    var body: some View {
-        ScrollView {
-            VStack(spacing: 16) {
-                HStack(spacing: 16) {
-                    tile("Dictations", "\(store.entries.count)")
-                    tile("Words", "\(store.totalWords)")
-                }
-                HStack(spacing: 16) {
-                    tile("Audio recorded", format(store.totalSeconds))
-                    tile("Average decode", String(format: "%.2fs", store.averageLatency))
-                }
-                tile("Time saved vs typing", format(max(0, store.minutesSaved) * 60),
-                     note: "Assuming 40 words per minute typed.")
-            }
-            .padding(24)
-        }
-    }
-
-    private func tile(_ title: String, _ value: String, note: String? = nil) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text(title).font(.caption).foregroundStyle(.secondary)
-            Text(value).font(.system(size: 32, weight: .medium, design: .rounded))
-                .monospacedDigit()
-            if let note { Text(note).font(.caption2).foregroundStyle(.tertiary) }
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(16)
-        .background(.quaternary.opacity(0.4), in: RoundedRectangle(cornerRadius: 12))
-    }
-
-    private func format(_ seconds: Double) -> String {
-        seconds < 60 ? String(format: "%.0fs", seconds)
-                     : String(format: "%.0fm %02.0fs", (seconds / 60).rounded(.down), seconds.truncatingRemainder(dividingBy: 60))
     }
 }
