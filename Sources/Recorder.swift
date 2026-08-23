@@ -25,6 +25,7 @@ final class Recorder {
     private(set) var rawPeak: Float = 0
     private(set) var tapFormat: AVAudioFormat?
     private var releaseWork: DispatchWorkItem?
+    private var configObserver: NSObjectProtocol?
 
     /// How long voice processing stays warm after a dictation ends.
     ///
@@ -43,6 +44,24 @@ final class Recorder {
         interleaved: false
     )!
 
+    init() {
+        // Another app opening or closing the microphone — Claude, FaceTime, a
+        // meeting in a browser tab — reconfigures the input device, and
+        // AVAudioEngine tears its graph down when that happens. The tap then
+        // stays installed but delivers nothing, so dictation records perfect
+        // silence and reports "no speech detected". Rebuilding the tap on the
+        // new format is the only fix.
+        configObserver = NotificationCenter.default.addObserver(
+            forName: .AVAudioEngineConfigurationChange,
+            object: engine, queue: .main) { [weak self] _ in
+                self?.reconfigure()
+            }
+    }
+
+    deinit {
+        if let o = configObserver { NotificationCenter.default.removeObserver(o) }
+    }
+
     enum RecorderError: Error, CustomStringConvertible {
         case noInput
         case converterFailed
@@ -59,17 +78,26 @@ final class Recorder {
 
     func start() throws {
         guard !isRecording else { return }
+        releaseWork?.cancel()
+        releaseWork = nil
+        try arm(keepingAudio: false)
+        isRecording = true
+    }
 
+    /// Builds the tap on whatever format the input device is offering now and
+    /// starts the engine. `keepingAudio` is false for a new dictation and true
+    /// when rebuilding mid-recording after the device changed underneath us —
+    /// there the samples already captured must survive.
+    private func arm(keepingAudio: Bool) throws {
         let input = engine.inputNode
+        engine.stop()
+        input.removeTap(onBus: 0)
 
         // Apple's voice-processing unit: echo cancellation, noise suppression
         // and gain control, the same path FaceTime uses. This is what lets
         // Whisper hear speech over background music. It must be set before the
         // engine starts, and it CHANGES the node's format — which is why the
         // tap format is read afterwards, not before.
-        releaseWork?.cancel()
-        releaseWork = nil
-
         let wantVP = Settings.shared.voiceIsolation
         if input.isVoiceProcessingEnabled != wantVP {
             do { try input.setVoiceProcessingEnabled(wantVP) }
@@ -90,10 +118,11 @@ final class Recorder {
         monoFormat = mono
         converter = conv
         tapFormat = tapF
-        rawPeak = 0
-        lock.lock(); samples.removeAll(keepingCapacity: true); lock.unlock()
+        if !keepingAudio {
+            rawPeak = 0
+            lock.lock(); samples.removeAll(keepingCapacity: true); lock.unlock()
+        }
 
-        input.removeTap(onBus: 0)
         input.installTap(onBus: 0, bufferSize: 4096, format: tapF) { [weak self] buffer, _ in
             self?.append(buffer)
         }
@@ -103,7 +132,39 @@ final class Recorder {
             input.removeTap(onBus: 0)
             throw RecorderError.engineFailed(error.localizedDescription)
         }
-        isRecording = true
+        // Which device, at what format, with voice processing in what state.
+        // Every "it works everywhere except in that one app" report comes down
+        // to one of these three changing without anyone asking.
+        Log.write(String(format: "audio   input \"%@\" %gHz x%u vp=%@",
+                         Recorder.inputDeviceName(), tapF.sampleRate,
+                         tapF.channelCount, input.isVoiceProcessingEnabled ? "on" : "off"))
+    }
+
+    /// The device the engine is actually reading, by name — a Bluetooth headset
+    /// that another app switched to sounds identical to a dead tap in a log.
+    static func inputDeviceName() -> String {
+        AVCaptureDevice.default(for: .audio)?.localizedName ?? "unknown"
+    }
+
+    /// The input device was reconfigured under us. While recording that means
+    /// the tap is dead and must be rebuilt on the new format; the audio already
+    /// captured is kept.
+    private func reconfigure() {
+        guard isRecording else {
+            Log.write("audio   input device reconfigured while idle")
+            return
+        }
+        Log.write("audio   input device reconfigured mid-recording — rebuilding the tap")
+        do {
+            try arm(keepingAudio: true)
+        } catch {
+            // ponytail: leaves the recording running on a dead tap rather than
+            // ending the utterance from underneath the user. The release gate
+            // then reports "too quiet", which is at least honest. Recover by
+            // ending the recording and starting again if this ever shows up in
+            // a log.
+            Log.write("audio   could not rebuild the tap: \(error)")
+        }
     }
 
     /// Everything captured so far, without stopping. Used by live

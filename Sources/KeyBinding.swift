@@ -50,11 +50,11 @@ struct KeyBinding: Codable, Equatable, Hashable {
     static let lockDefault = KeyBinding(keyCode: 49, deviceMask: 0,
                                         modifierFlags: CGEventFlags.maskAlternate.rawValue,
                                         kind: .combo)
-    /// ⌥R+Space — quick-add to the vocabulary list. A chord rather than a plain
-    /// combo so it can sit alongside ⌥Space without stealing it.
-    static let vocabDefault = KeyBinding(keyCode: 49, deviceMask: 0,
+    /// ⌥R — quick-add to the vocabulary list. A plain combo: it does not
+    /// collide with anything, so the chord support below stays available for a
+    /// binding that needs it rather than being the default.
+    static let vocabDefault = KeyBinding(keyCode: 15, deviceMask: 0,
                                          modifierFlags: CGEventFlags.maskAlternate.rawValue,
-                                         chordKeyCode: 15,
                                          kind: .combo)
 
     var isModifier: Bool { kind == .bareModifier }
@@ -101,7 +101,7 @@ struct KeyBinding: Codable, Equatable, Hashable {
 
     /// A combo with no modifier would consume that key everywhere, leaving the
     /// user unable to type — including in this settings window.
-    func validate(against other: KeyBinding?) -> Problem? {
+    func validate(against others: [KeyBinding]) -> Problem? {
         if kind == .combo && modifierFlags == 0 { return .noModifier }
         if kind == .combo {
             let cmd = CGEventFlags.maskCommand.rawValue
@@ -115,7 +115,7 @@ struct KeyBinding: Codable, Equatable, Hashable {
                 return .reserved
             }
         }
-        if let other, other == self { return .duplicate }
+        if others.contains(self) { return .duplicate }
         return nil
     }
 

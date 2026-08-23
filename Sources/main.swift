@@ -235,8 +235,12 @@ func selftestToggle() -> Never {
 
     print("chord vs the combo inside it:")
     let lock = KeyBinding.lockDefault           // ⌥Space
-    let vocab = KeyBinding.vocabDefault         // ⌥R+Space
     let opt = CGEventFlags.maskAlternate.rawValue
+    // The default quick-add is plain ⌥R; a chord is what someone gets by
+    // recording two keys, and it is the case that can be confused with the
+    // combo inside it.
+    let vocab = KeyBinding(keyCode: 49, deviceMask: 0, modifierFlags: opt,
+                           chordKeyCode: 15, kind: .combo)
     func check(_ what: String, _ got: Bool, _ want: Bool) {
         let ok = got == want
         if !ok { failures += 1 }
@@ -259,6 +263,66 @@ func selftestToggle() -> Never {
             .collides(with: lock), false)
     check("display name reads as a chord",
           vocab.displayName == "⌥R+Space", true)
+
+    print("which combo owns a keystroke (precedence):")
+    func owner(_ what: String, code: Int64, flags: UInt64, held: Set<Int64>,
+               _ want: Hotkey.Combo) {
+        let got = Hotkey.combo(code: code, flags: flags, held: held,
+                               lock: lock, lockEnabled: true,
+                               vocab: vocab, vocabEnabled: true)
+        let ok = got == want
+        if !ok { failures += 1 }
+        print("  \(ok ? "ok  " : "FAIL") \(what)")
+        if !ok { print("        got \(got), want \(want)") }
+    }
+
+    // The bug this exists to catch: ⌥Space was tested first, so the chord was
+    // never reached and quick-add could not fire at all.
+    owner("Space with R held is quick-add, not the lock",
+          code: 49, flags: opt, held: [15, 49], .quickAdd)
+    owner("Space on its own is the lock",
+          code: 49, flags: opt, held: [49], .lock)
+    owner("R on its own is the chord's held key",
+          code: 15, flags: opt, held: [15], .quickAddHeldKey)
+    // Pressing them the other way round: Space lands first, the lock is held
+    // for a moment, and R completing the chord is what cancels it. Classifying
+    // R is all this does — whether it fires is the pending lock's business.
+    owner("R arriving after Space is still the held key",
+          code: 15, flags: opt, held: [15, 49], .quickAddHeldKey)
+    owner("an unrelated combo belongs to nobody",
+          code: 11, flags: opt, held: [11], Hotkey.Combo.none)
+    owner("Space with no modifier belongs to nobody",
+          code: 49, flags: 0, held: [49], Hotkey.Combo.none)
+
+    let plainVocab = KeyBinding.vocabDefault    // ⌥R
+    func plainOwner(_ what: String, code: Int64, held: Set<Int64>, _ want: Hotkey.Combo) {
+        let got = Hotkey.combo(code: code, flags: opt, held: held,
+                               lock: lock, lockEnabled: true,
+                               vocab: plainVocab, vocabEnabled: true)
+        let ok = got == want
+        if !ok { failures += 1 }
+        print("  \(ok ? "ok  " : "FAIL") \(what)")
+    }
+    plainOwner("the default plain ⌥R quick-add", code: 15, held: [15], .quickAdd)
+    plainOwner("and does not steal the lock", code: 49, held: [49], .lock)
+
+    func disabled(_ what: String, vocabOn: Bool, lockOn: Bool,
+                  code: Int64, held: Set<Int64>, _ want: Hotkey.Combo) {
+        let got = Hotkey.combo(code: code, flags: opt, held: held,
+                               lock: lock, lockEnabled: lockOn,
+                               vocab: vocab, vocabEnabled: vocabOn)
+        let ok = got == want
+        if !ok { failures += 1 }
+        print("  \(ok ? "ok  " : "FAIL") \(what)")
+    }
+    disabled("quick-add off — the chord falls through to the lock",
+             vocabOn: false, lockOn: true, code: 49, held: [15, 49], .lock)
+    disabled("quick-add off — R is not swallowed",
+             vocabOn: false, lockOn: true, code: 15, held: [15], Hotkey.Combo.none)
+    disabled("lock off — the chord still fires",
+             vocabOn: true, lockOn: false, code: 49, held: [15, 49], .quickAdd)
+    disabled("lock off — plain Space belongs to nobody",
+             vocabOn: true, lockOn: false, code: 49, held: [49], Hotkey.Combo.none)
 
     print("stray hold release with nothing running:")
     reset()

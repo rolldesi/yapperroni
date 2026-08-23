@@ -154,6 +154,11 @@ final class Settings: ObservableObject {
     @Published var historyEnabled: Bool        { didSet { d.set(historyEnabled, forKey: "historyEnabled") } }
     @Published var historyLimit: Int           { didSet { d.set(historyLimit, forKey: "historyLimit") } }
     @Published var minPeakRMS: Double          { didSet { d.set(minPeakRMS, forKey: "minPeakRMS") } }
+    /// Loudness under which a hands-free session counts as silent and ends
+    /// itself. Adjustable because it is the one number that depends on the
+    /// room: a fan or an air conditioner sits above the factory default and
+    /// keeps the session alive forever.
+    @Published var autoStopRMS: Double         { didSet { d.set(autoStopRMS, forKey: "autoStopRMS") } }
     @Published var minSpeechSeconds: Double    { didSet { d.set(minSpeechSeconds, forKey: "minSpeechSeconds") } }
     @Published var modelFilename: String       { didSet { d.set(modelFilename, forKey: "modelFilename") } }
 
@@ -191,6 +196,7 @@ final class Settings: ObservableObject {
             "historyEnabled": true,
             "historyLimit": 500,
             "minPeakRMS": Double(Config.defaultMinPeakRMS),
+            "autoStopRMS": Double(Config.defaultAutoStopRMS),
             "minSpeechSeconds": Config.defaultMinSpeechSeconds,
             "modelFilename": Config.defaultModelFilename,
         ])
@@ -218,6 +224,7 @@ final class Settings: ObservableObject {
         historyEnabled   = d.bool(forKey: "historyEnabled")
         historyLimit     = d.integer(forKey: "historyLimit")
         minPeakRMS       = d.double(forKey: "minPeakRMS")
+        autoStopRMS      = d.double(forKey: "autoStopRMS")
         minSpeechSeconds = d.double(forKey: "minSpeechSeconds")
         modelFilename    = d.string(forKey: "modelFilename") ?? Config.defaultModelFilename
     }
@@ -292,6 +299,7 @@ final class Settings: ObservableObject {
         historyEnabled   = true
         historyLimit     = 500
         minPeakRMS       = Double(Config.defaultMinPeakRMS)
+        autoStopRMS      = Double(Config.defaultAutoStopRMS)
         minSpeechSeconds = Config.defaultMinSpeechSeconds
         modelFilename    = Config.defaultModelFilename
     }

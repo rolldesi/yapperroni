@@ -13,6 +13,8 @@ final class Hotkey {
     enum Source { case hold, lock }
     enum Action: Equatable { case activate, deactivate, none }
     enum Input { case holdDown, holdUp, lockPress }
+    /// A keystroke's owner among the swallowed combos, most specific first.
+    enum Combo: Equatable { case quickAdd, lock, quickAddHeldKey, none }
 
     /// Key state, kept separate from the tap so it can be tested without
     /// synthesising events. See `--selftest-toggle`.
@@ -172,8 +174,20 @@ final class Hotkey {
         if type == .keyDown { heldKeys.insert(code) }
         if type == .keyUp { heldKeys.remove(code) }
 
-        // Lock combo first: it is the only thing that gets consumed.
-        if lockEnabled, lock.kind == .combo, lock.matches(keyCode: code, flags: flags) {
+        // Combos, in order of how specific they are. Every case here is
+        // swallowed: ⌥Space would otherwise also type a space, and ⌥R an "®".
+        switch Hotkey.combo(code: code, flags: flags, held: heldKeys,
+                            lock: lock, lockEnabled: lockEnabled,
+                            vocab: vocab, vocabEnabled: vocabEnabled) {
+        case .quickAdd:
+            if type == .keyDown, !repeated {
+                cancelPendingLock()
+                fireVocab()
+            }
+            // Swallow the keyUp too, or the focused app sees an orphaned release.
+            return type == .keyDown || type == .keyUp
+
+        case .lock:
             if type == .keyDown, !repeated {
                 if vocabEnabled, vocab.collides(with: lock) {
                     // Space may have landed a hair before the chord key. Hold
@@ -184,33 +198,21 @@ final class Hotkey {
                     emit(Hotkey.decide(.lockPress, mode: mode, state: &state), .lock)
                 }
             }
-            // Swallow the keyUp too, or the focused app sees an orphaned release.
             return type == .keyDown || type == .keyUp
-        }
 
-        // Quick-add first: a chord is more specific than the combo it contains,
-        // so ⌥R+Space must be tested before ⌥Space.
-        if vocabEnabled, vocab.kind == .combo,
-           vocab.matches(keyCode: code, flags: flags, held: heldKeys) {
-            if type == .keyDown, !repeated {
-                cancelPendingLock()
-                fireVocab()
-            }
-            return type == .keyDown || type == .keyUp
-        }
-
-        // The chord's held key, pressed on its own. Swallow it so ⌥R does not
-        // type "®" while waiting for Space — and if the lock is mid-wait
-        // because Space landed a moment early, this is what completes the
-        // chord.
-        if vocabEnabled, vocab.kind == .combo, let chordKey = vocab.chordKeyCode,
-           code == chordKey, KeyBinding.normalize(flags) == vocab.modifierFlags {
+        case .quickAddHeldKey:
+            // The chord's held key on its own. Swallowed so it does not type
+            // while waiting for the second key — and if the lock is mid-wait
+            // because that key landed a moment early, this completes the chord.
             if type == .keyDown, !repeated, pendingLock != nil,
                heldKeys.contains(vocab.keyCode) {
                 cancelPendingLock()
                 fireVocab()
             }
             return type == .keyDown || type == .keyUp
+
+        case .none:
+            break
         }
 
         guard code == push.keyCode else { return false }
@@ -239,6 +241,32 @@ final class Hotkey {
         holdIsDown = down
         emit(Hotkey.decide(down ? .holdDown : .holdUp, mode: mode, state: &state), .hold)
         return push.consumes
+    }
+
+    /// Which combo a keystroke belongs to.
+    ///
+    /// Precedence is the whole point, and getting it wrong is invisible: a
+    /// chord is more specific than the plain combo inside it, so ⌥R+Space has
+    /// to be tested before ⌥Space. Test the combo first and it wins every
+    /// chord, because the two differ only by which other key is held.
+    ///
+    /// Pure and static so that precedence is testable without synthesising
+    /// system events — see `--selftest-toggle`.
+    static func combo(code: Int64, flags: UInt64, held: Set<Int64>,
+                      lock: KeyBinding, lockEnabled: Bool,
+                      vocab: KeyBinding, vocabEnabled: Bool) -> Combo {
+        if vocabEnabled, vocab.kind == .combo,
+           vocab.matches(keyCode: code, flags: flags, held: held) {
+            return .quickAdd
+        }
+        if lockEnabled, lock.kind == .combo, lock.matches(keyCode: code, flags: flags) {
+            return .lock
+        }
+        if vocabEnabled, vocab.kind == .combo, let chordKey = vocab.chordKeyCode,
+           code == chordKey, KeyBinding.normalize(flags) == vocab.modifierFlags {
+            return .quickAddHeldKey
+        }
+        return .none
     }
 
     private func fireVocab() {

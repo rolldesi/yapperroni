@@ -305,7 +305,9 @@ struct SettingsView: View {
                 group("Shortcuts") {
                     KeyRecorderField(title: "Hold to dictate",
                                      binding: $settings.binding,
-                                     conflictsWith: settings.lockEnabled ? settings.lockBinding : nil,
+                                     conflictsWith: [settings.lockEnabled ? settings.lockBinding : nil,
+                                                     settings.vocabEnabled ? settings.vocabBinding : nil]
+                                        .compactMap { $0 },
                                      allowBareModifier: true)
                     Picker("Mode", selection: $settings.activation) {
                         ForEach(ActivationMode.allCases) { Text($0.label).tag($0) }
@@ -317,7 +319,8 @@ struct SettingsView: View {
                     Toggle("Enable hands-free lock", isOn: $settings.lockEnabled)
                     KeyRecorderField(title: "Lock combo",
                                      binding: $settings.lockBinding,
-                                     conflictsWith: settings.binding,
+                                     conflictsWith: [settings.binding]
+                                        + (settings.vocabEnabled ? [settings.vocabBinding] : []),
                                      allowBareModifier: false)
                         .disabled(!settings.lockEnabled)
                     hint("Press once to start recording hands-free, press again to stop. It must include a modifier, because Yapperroni swallows this combination so it does not also type.")
@@ -327,7 +330,8 @@ struct SettingsView: View {
                     Toggle("Enable quick-add to vocabulary", isOn: $settings.vocabEnabled)
                     KeyRecorderField(title: "Add a word",
                                      binding: $settings.vocabBinding,
-                                     conflictsWith: settings.binding,
+                                     conflictsWith: [settings.binding]
+                                        + (settings.lockEnabled ? [settings.lockBinding] : []),
                                      allowBareModifier: false)
                         .disabled(!settings.vocabEnabled)
                     hint("Opens a small window anywhere you are, so you can add a word the moment Yapperroni gets it wrong. Stays open until you press Escape, then hands focus back.")
@@ -378,6 +382,17 @@ struct SettingsView: View {
                         }
                         Slider(value: $settings.minPeakRMS, in: 0.0001...0.02)
                     }
+                    VStack(alignment: .leading, spacing: 6) {
+                        HStack {
+                            Text("Stop when quieter than")
+                            Spacer()
+                            Text(String(format: "%.4f", settings.autoStopRMS))
+                                .monospacedDigit().foregroundStyle(Palette.muted)
+                        }
+                        Slider(value: $settings.autoStopRMS, in: 0.001...0.05)
+                    }
+                    hint("A hands-free recording ends itself after three seconds under this level. Raise it if a fan or an air conditioner keeps the session running; lower it if you get cut off while thinking. The diagnostic log prints the quietest second of every recording — set this just above that number.")
+
                     VStack(alignment: .leading, spacing: 6) {
                         HStack {
                             Text("Minimum length")

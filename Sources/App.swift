@@ -31,6 +31,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// the key and then gathering your thought is normal, and the engine plus
     /// voice-processing warmup already eats part of the first second.
     private var heardVoice = false
+    /// Quietest one-second window this session, logged on release. It is the
+    /// number to set the auto-stop threshold just above when a fan or an air
+    /// conditioner is keeping the session alive.
+    private var quietestSecond: Float = .infinity
     /// When the last dictation ended. Starting capture tears the audio engine
     /// down and builds it back up, and AVAudioEngine is not safe to churn at
     /// key-repeat speed — a held-down or hammered hotkey would otherwise
@@ -189,6 +193,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         lastSilenceCheck = sessionStart
         voicePeak = 0
         heardVoice = false
+        quietestSecond = .infinity
         handsFree = (source == .lock) || settings.activation == .toggle
         Log.write("press   source=\(source == .lock ? "lock" : "hold") target=\(targetAppName)")
         if settings.soundFeedback { NSSound(named: "Tink")?.play() }
@@ -241,7 +246,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         voicePeak = max(voicePeak, recorder.level)
         guard now.timeIntervalSince(lastSilenceCheck) >= 1 else { return }
         lastSilenceCheck = now
-        if voicePeak >= Config.silenceRMS {
+        quietestSecond = min(quietestSecond, voicePeak)
+        if voicePeak >= Float(settings.autoStopRMS) {
             lastVoiceAt = now
             heardVoice = true
         }
@@ -282,6 +288,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let peak = Recorder.peakRMS(pcm)
         Log.write(String(format: "release samples=%d secs=%.2f peak100ms=%.5f (floors: %.2fs / %.5f)",
                          pcm.count, seconds, peak, settings.minSpeechSeconds, settings.minPeakRMS))
+        if handsFree, quietestSecond.isFinite {
+            // What the room measures when nobody is talking. Auto-stop only
+            // fires when a whole second lands under the threshold, so this is
+            // the number that decides whether it ever can.
+            Log.write(String(format: "        quietest second %.5f (auto-stop below %.5f)",
+                             quietestSecond, settings.autoStopRMS))
+        }
 
         if let live = streamer {
             streamer = nil

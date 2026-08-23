@@ -10,7 +10,10 @@ struct KeyRecorderField: View {
     let title: String
     @Binding var binding: KeyBinding
     /// The other shortcut, so we can refuse a duplicate.
-    var conflictsWith: KeyBinding?
+    /// Every binding this one must not duplicate. A vocab combo set to ⌥Space
+    /// would silently swallow the hands-free lock, so each field checks all the
+    /// others, not just one.
+    var conflictsWith: [KeyBinding]
     /// Push-to-talk accepts a modifier held on its own; the lock combo does not.
     var allowBareModifier: Bool
 
