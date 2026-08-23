@@ -113,6 +113,32 @@ fixes: the polling loop now wakes on a semaphore instead of sitting out its
 finished transcript by anchor rather than by counting words, because real
 speech re-segments between passes.
 
+## Sessions that end themselves
+
+Hands-free has nothing to stop it but a second keypress, and a lock left on
+holds the microphone — and voice processing, which ducks every other app. One
+session in testing ran two hours and eleven minutes. So three ceilings end a
+recording on their own, all of them through the normal insert path: a ceiling
+stops the recording, it never discards what you said.
+
+- **Three minutes**, on any session.
+- **Three seconds of silence**, hands-free only — a momentary hold is never cut
+  off for going quiet, because pausing to think is normal there. It only arms
+  once the session has actually heard you, so pressing the key and then
+  gathering your thought does not end it.
+- **A looping transcript**, in live mode. Whisper loops when the audio runs out
+  of speech: it decodes the same clause forever, and live mode types it forever.
+
+The silence threshold is the one number that depends on your room — a fan or an
+air conditioner can sit above the default and keep a session alive indefinitely.
+Settings → Silence gate → *Stop when quieter than*, and every release logs the
+quietest second it measured, which is the number to set it just above:
+
+```
+release samples=290006 secs=18.13 peak100ms=0.00795 (floors: 0.30s / 0.00445)
+        quietest second 0.01631 (auto-stop below 0.02500)
+```
+
 ## Speed
 
 ~0.3–0.5 s from key release to pasted text for a normal sentence, measured on
@@ -123,7 +149,7 @@ per-utterance load cost.
 
 Requires an Apple Silicon Mac (M1 or later) on macOS 26 or newer.
 
-1. Download `Yapperroni-1.0.dmg` from the
+1. Download the `.dmg` from the
    [latest release](https://github.com/rolldesi/yapperroni/releases/latest)
    and open it.
 2. Drag **Yapperroni** onto the **Applications** shortcut.
@@ -299,7 +325,7 @@ including bare modifiers, passes straight through untouched.
 
 ## Self-tests
 
-Three independent failure domains, each checkable on its own:
+Independent failure domains, each checkable on its own:
 
 ```bash
 APP=~/Applications/Yapperroni.app/Contents/MacOS/Yapperroni
@@ -309,6 +335,8 @@ $APP --selftest-audio                                     # mic + 16 kHz resampl
 $APP --selftest-hotkey                                    # bound modifier's bit mask, no permissions needed
 $APP --selftest-toggle                                    # hold/toggle state machine, incl. rejected presses
 $APP --selftest-vocab                                     # vocabulary separators, de-duplication, prompt cap
+$APP --selftest-align                                     # live tail alignment, and the loop detector
+$APP --selftest-retry                                     # which cleanup failures are worth retrying
 $APP --selftest-streaming vendor-whisper/samples/jfk.wav  # words emerging in simulated real time
 ```
 
@@ -440,6 +468,10 @@ Dictation being dropped as "Too quiet": lower the loudness floor, or press
 **Test microphone** to measure. Reference points — speaking normally into the
 built-in mic sits around `0.05`–`0.2`; audio arriving across a room via the
 speakers measured `0.0094`; the default floor is `0.0005`.
+
+A hands-free session never timing out: raise **Stop when quieter than** above
+your room's noise floor. The log's `quietest second` line is that floor,
+measured.
 
 Adding a key that is not in the list: extend `KeyBinding.modifiers` or
 `functionKeys`. Modifier masks are the `NX_DEVICE*KEYMASK` bits — the generic
