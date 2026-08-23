@@ -14,12 +14,22 @@ final class MainWindow: NSObject, NSWindowDelegate {
     /// Shows the window. `reason` is logged: this app is a background tool
     /// first, so an unexplained window appearing over the user's work is a bug,
     /// and the log is how we find out which path did it.
+    /// nil appearance means "follow the system"; the other two pin it.
+    func applyTheme() {
+        switch Settings.shared.theme {
+        case .system: window?.appearance = nil
+        case .light:  window?.appearance = NSAppearance(named: .aqua)
+        case .dark:   window?.appearance = NSAppearance(named: .darkAqua)
+        }
+    }
+
     func show(section: Section = .history, reason: String = "unspecified") {
         Log.write("window  show (\(reason))")
         if window == nil { build() }
         AppState.shared.section = section
 
         NSApp.setActivationPolicy(.regular)
+        applyTheme()
         installMainMenu()
         if window?.isVisible != true { window?.center() }
         window?.makeKeyAndOrderFront(nil)
@@ -51,8 +61,7 @@ final class MainWindow: NSObject, NSWindowDelegate {
         w.delegate = self
         // The brief is a plain white canvas — force light appearance so it
         // never flips to a dark titlebar/window chrome under system dark mode.
-        w.appearance = NSAppearance(named: .aqua)
-        w.backgroundColor = .white
+        w.backgroundColor = .windowBackgroundColor
         w.contentView = NSHostingView(rootView: ContentView())
         window = w
     }

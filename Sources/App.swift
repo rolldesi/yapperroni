@@ -63,6 +63,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             .sink { [weak self] in self?.startHotkey() }
             .store(in: &bag)
 
+        settings.themeChanged
+            .receive(on: DispatchQueue.main)
+            .sink { MainWindow.shared.applyTheme() }
+            .store(in: &bag)
+
         settings.$modelFilename
             .dropFirst()
             .removeDuplicates()

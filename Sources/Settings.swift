@@ -27,6 +27,18 @@ enum OutputMode: String, Codable, CaseIterable, Identifiable {
     }
 }
 
+enum AppTheme: String, Codable, CaseIterable, Identifiable {
+    case system, light, dark
+    var id: String { rawValue }
+    var label: String {
+        switch self {
+        case .system: return "Match system"
+        case .light:  return "Light"
+        case .dark:   return "Dark"
+        }
+    }
+}
+
 enum HUDPosition: String, Codable, CaseIterable, Identifiable {
     case bottom, top, center, hidden
     var id: String { rawValue }
@@ -40,6 +52,8 @@ final class Settings: ObservableObject {
 
     /// Set when a change requires the event tap to be rebuilt.
     let hotkeyChanged = PassthroughSubject<Void, Never>()
+    /// Fired when the window needs its appearance reapplied.
+    let themeChanged = PassthroughSubject<Void, Never>()
 
     /// Push-to-talk key.
     @Published var binding: KeyBinding {
@@ -76,6 +90,13 @@ final class Settings: ObservableObject {
     /// Type words as they settle, instead of pasting everything at the end.
     @Published var liveTranscription: Bool     { didSet { d.set(liveTranscription, forKey: "liveTranscription") } }
     @Published var hudPosition: HUDPosition    { didSet { d.set(hudPosition.rawValue, forKey: "hudPosition") } }
+    @Published var theme: AppTheme {
+        didSet {
+            guard theme != oldValue else { return }
+            d.set(theme.rawValue, forKey: "theme")
+            themeChanged.send()
+        }
+    }
     /// Leave every transcript on the clipboard, so it can be pasted anywhere
     /// even when nothing was focused to type into.
     @Published var copyToClipboard: Bool       { didSet { d.set(copyToClipboard, forKey: "copyToClipboard") } }
@@ -112,6 +133,7 @@ final class Settings: ObservableObject {
             "activation": ActivationMode.hold.rawValue,
             "output": OutputMode.paste.rawValue,
             "hudPosition": HUDPosition.bottom.rawValue,
+            "theme": AppTheme.light.rawValue,
             "copyToClipboard": true,
             "trailingSpace": true,
             "voiceIsolation": true,
@@ -133,6 +155,7 @@ final class Settings: ObservableObject {
         activation       = ActivationMode(rawValue: d.string(forKey: "activation") ?? "") ?? .hold
         output           = OutputMode(rawValue: d.string(forKey: "output") ?? "") ?? .paste
         hudPosition      = HUDPosition(rawValue: d.string(forKey: "hudPosition") ?? "") ?? .bottom
+        theme            = AppTheme(rawValue: d.string(forKey: "theme") ?? "") ?? .light
         copyToClipboard  = d.bool(forKey: "copyToClipboard")
         trailingSpace    = d.bool(forKey: "trailingSpace")
         voiceIsolation   = d.bool(forKey: "voiceIsolation")
@@ -199,6 +222,7 @@ final class Settings: ObservableObject {
         activation       = .hold
         output           = .paste
         hudPosition      = .bottom
+        theme            = .light
         copyToClipboard  = true
         trailingSpace    = true
         voiceIsolation   = true

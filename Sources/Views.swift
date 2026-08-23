@@ -1,6 +1,14 @@
 import SwiftUI
 import AppKit
 
+/// Adaptive surfaces. `Color.primary` is black in light and white in dark, so
+/// tinting with it gives the same subtle separation in both themes — hardcoded
+/// black would vanish on a dark background.
+enum Palette {
+    static let canvas = Color(nsColor: .textBackgroundColor)
+    static func tint(_ o: Double) -> Color { Color.primary.opacity(o) }
+}
+
 // A plain white canvas, forced regardless of system appearance — the brief
 // asked for this twice. Two tabs, nothing else.
 
@@ -10,7 +18,6 @@ struct ContentView: View {
     var body: some View {
         if state.showWelcome {
             WelcomeView()
-                .preferredColorScheme(.light)
         } else {
             VStack(spacing: 0) {
                 TabBar()
@@ -23,8 +30,7 @@ struct ContentView: View {
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
-            .background(Color.white)
-            .preferredColorScheme(.light)
+            .background(Palette.canvas)
         }
     }
 }
@@ -46,7 +52,7 @@ private struct TabBar: View {
         }
         .padding(.top, 22)
         .padding(.bottom, 14)
-        .background(Color.white)
+        .background(Palette.canvas)
     }
 
     private func tab(_ section: Section) -> some View {
@@ -57,9 +63,9 @@ private struct TabBar: View {
             VStack(spacing: 7) {
                 Text(section.label)
                     .font(.system(size: 14, weight: active ? .semibold : .regular))
-                    .foregroundStyle(active ? Color.black : Color.black.opacity(0.4))
+                    .foregroundStyle(active ? Color.primary : Palette.tint(0.45))
                 Rectangle()
-                    .fill(active ? Color.black : Color.clear)
+                    .fill(active ? Color.primary : Color.clear)
                     .frame(width: 20, height: 2)
             }
         }
@@ -114,7 +120,7 @@ struct HistoryView: View {
                 summary
             }
         }
-        .background(Color.white)
+        .background(Palette.canvas)
         .confirmationDialog("Delete all \(store.entries.count) transcripts?",
                             isPresented: $confirmClear, titleVisibility: .visible) {
             Button("Delete All", role: .destructive) { store.clear(); selection.removeAll() }
@@ -128,7 +134,7 @@ struct HistoryView: View {
         VStack(alignment: .leading, spacing: 18) {
             Text("History")
                 .font(.system(size: 26, weight: .semibold))
-                .foregroundStyle(.black)
+                .foregroundStyle(.primary)
 
             searchBar
         }
@@ -146,7 +152,7 @@ struct HistoryView: View {
             }
             .padding(.horizontal, 10)
             .padding(.vertical, 7)
-            .background(Color.black.opacity(0.035), in: RoundedRectangle(cornerRadius: 7))
+            .background(Palette.tint(0.035), in: RoundedRectangle(cornerRadius: 7))
 
             if !selection.isEmpty {
                 Button {
@@ -177,7 +183,7 @@ struct HistoryView: View {
                     if selection.contains(u.id) { selection.remove(u.id) } else { selection.insert(u.id) }
                 } label: {
                     Image(systemName: selection.contains(u.id) ? "checkmark.circle.fill" : "circle")
-                        .foregroundStyle(selection.contains(u.id) ? Color.accentColor : Color.black.opacity(0.25))
+                        .foregroundStyle(selection.contains(u.id) ? Color.accentColor : Palette.tint(0.25))
                 }
                 .buttonStyle(.plain)
                 .padding(.top, 2)
@@ -188,7 +194,7 @@ struct HistoryView: View {
             VStack(alignment: .leading, spacing: 5) {
                 Text(u.text)
                     .font(.system(size: 14))
-                    .foregroundStyle(.black)
+                    .foregroundStyle(.primary)
                     .textSelection(.enabled)
                     .lineLimit(4)
                 HStack(spacing: 10) {
@@ -215,7 +221,7 @@ struct HistoryView: View {
         }
         .padding(.horizontal, 24)
         .padding(.vertical, 12)
-        .background(hovering == u.id ? Color.black.opacity(0.025) : Color.clear)
+        .background(hovering == u.id ? Palette.tint(0.025) : Color.clear)
         .onHover { hovering = $0 ? u.id : (hovering == u.id ? nil : hovering) }
         .contextMenu {
             Button("Copy") { copy(u.text) }
@@ -240,7 +246,7 @@ struct HistoryView: View {
     private var empty: some View {
         VStack(spacing: 10) {
             Image(systemName: "waveform").font(.system(size: 36)).foregroundStyle(.tertiary)
-            Text("No dictations yet").font(.system(size: 15, weight: .medium)).foregroundStyle(.black)
+            Text("No dictations yet").font(.system(size: 15, weight: .medium)).foregroundStyle(.primary)
             Text("Hold \(Settings.shared.binding.displayName) and speak.")
                 .font(.system(size: 13)).foregroundStyle(.secondary)
         }
@@ -266,7 +272,7 @@ struct SettingsView: View {
             VStack(alignment: .leading, spacing: 36) {
                 Text("Settings")
                     .font(.system(size: 26, weight: .semibold))
-                    .foregroundStyle(.black)
+                    .foregroundStyle(.primary)
                     .padding(.top, 4)
 
                 group("Shortcuts") {
@@ -360,12 +366,15 @@ struct SettingsView: View {
                         .font(.system(size: 12.5, design: .monospaced))
                         .frame(height: 92)
                         .padding(8)
-                        .background(Color.black.opacity(0.035), in: RoundedRectangle(cornerRadius: 8))
-                        .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(Color.black.opacity(0.06)))
+                        .background(Palette.tint(0.035), in: RoundedRectangle(cornerRadius: 8))
+                        .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(Palette.tint(0.06)))
                     hint("Names and jargon the model gets wrong — one per line, or comma separated. Whisper has no dictionary to update, so these are used to prime it.")
                 }
 
                 group("Appearance & feedback") {
+                    Picker("Theme", selection: $settings.theme) {
+                        ForEach(AppTheme.allCases) { Text($0.label).tag($0) }
+                    }
                     Picker("Status pill", selection: $settings.hudPosition) {
                         ForEach(HUDPosition.allCases) { Text($0.label).tag($0) }
                     }
@@ -411,7 +420,7 @@ struct SettingsView: View {
             .frame(maxWidth: 560, alignment: .leading)
             .frame(maxWidth: .infinity)
         }
-        .background(Color.white)
+        .background(Palette.canvas)
     }
 
     /// Whitespace and a soft tint separate groups — no boxes inside boxes.
@@ -419,13 +428,13 @@ struct SettingsView: View {
         VStack(alignment: .leading, spacing: 14) {
             Text(title)
                 .font(.system(size: 14, weight: .semibold))
-                .foregroundStyle(.black.opacity(0.85))
+                .foregroundStyle(Palette.tint(0.85))
             VStack(alignment: .leading, spacing: 12) {
                 content()
             }
         }
         .padding(18)
-        .background(Color.black.opacity(0.02), in: RoundedRectangle(cornerRadius: 12))
+        .background(Palette.tint(0.02), in: RoundedRectangle(cornerRadius: 12))
     }
 
     private func hint(_ s: String) -> some View {
