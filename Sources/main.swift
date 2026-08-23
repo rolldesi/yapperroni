@@ -233,6 +233,33 @@ func selftestToggle() -> Never {
     step(.holdUp,    .hold, .none,     "hold release does not stop a locked recording")
     step(.lockPress, .hold, .deactivate, "lock stops it")
 
+    print("chord vs the combo inside it:")
+    let lock = KeyBinding.lockDefault           // ⌥Space
+    let vocab = KeyBinding.vocabDefault         // ⌥R+Space
+    let opt = CGEventFlags.maskAlternate.rawValue
+    func check(_ what: String, _ got: Bool, _ want: Bool) {
+        let ok = got == want
+        if !ok { failures += 1 }
+        print("  \(ok ? "ok  " : "FAIL") \(what)")
+    }
+    check("⌥R+Space matches when R is held",
+          vocab.matches(keyCode: 49, flags: opt, held: [15, 49]), true)
+    check("⌥R+Space does NOT match when R is not held",
+          vocab.matches(keyCode: 49, flags: opt, held: [49]), false)
+    check("⌥Space still matches on its own",
+          lock.matches(keyCode: 49, flags: opt, held: [49]), true)
+    check("⌥Space is not confused by an unrelated held key",
+          lock.matches(keyCode: 49, flags: opt, held: [49, 8]), true)
+    check("wrong modifier matches neither",
+          vocab.matches(keyCode: 49, flags: 0, held: [15, 49]), false)
+    check("the two collide, so the lock must wait for the chord",
+          vocab.collides(with: lock), true)
+    check("a non-overlapping combo does not collide",
+          KeyBinding(keyCode: 11, deviceMask: 0, modifierFlags: opt, kind: .combo)
+            .collides(with: lock), false)
+    check("display name reads as a chord",
+          vocab.displayName == "⌥R+Space", true)
+
     print("stray hold release with nothing running:")
     reset()
     step(.holdUp, .hold, .none, "ignored")

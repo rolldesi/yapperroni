@@ -21,6 +21,12 @@ struct KeyBinding: Codable, Equatable, Hashable {
     var deviceMask: UInt64
     /// Required standard modifier bits. `combo` only.
     var modifierFlags: UInt64
+    /// A second key that must already be held when `keyCode` is pressed —
+    /// ⌥R+Space is `keyCode: Space, chordKeyCode: R`. `combo` only.
+    ///
+    /// Exists so a chord can be distinguished from the plain combo it contains:
+    /// ⌥Space and ⌥R+Space differ only by whether R is down at that instant.
+    var chordKeyCode: Int64?
     var kind: KeyKind
 
     // MARK: - Masks
@@ -44,24 +50,42 @@ struct KeyBinding: Codable, Equatable, Hashable {
     static let lockDefault = KeyBinding(keyCode: 49, deviceMask: 0,
                                         modifierFlags: CGEventFlags.maskAlternate.rawValue,
                                         kind: .combo)
-    /// ⌥R — quick-add to the vocabulary list.
-    static let vocabDefault = KeyBinding(keyCode: 15, deviceMask: 0,
+    /// ⌥R+Space — quick-add to the vocabulary list. A chord rather than a plain
+    /// combo so it can sit alongside ⌥Space without stealing it.
+    static let vocabDefault = KeyBinding(keyCode: 49, deviceMask: 0,
                                          modifierFlags: CGEventFlags.maskAlternate.rawValue,
+                                         chordKeyCode: 15,
                                          kind: .combo)
 
     var isModifier: Bool { kind == .bareModifier }
     /// Only combos are swallowed; everything else passes through to the app.
     var consumes: Bool { kind == .combo }
+    var isChord: Bool { chordKeyCode != nil }
 
     // MARK: - Matching
 
-    func matches(keyCode code: Int64, flags: UInt64) -> Bool {
+    /// `held` is the set of key codes physically down right now — needed only
+    /// for chords, where the distinguishing fact is which other key is held.
+    func matches(keyCode code: Int64, flags: UInt64, held: Set<Int64> = []) -> Bool {
         guard code == keyCode else { return false }
         switch kind {
         case .bareModifier: return true
         case .plainKey:     return KeyBinding.normalize(flags) == 0
-        case .combo:        return KeyBinding.normalize(flags) == modifierFlags
+        case .combo:
+            guard KeyBinding.normalize(flags) == modifierFlags else { return false }
+            if let chord = chordKeyCode { return held.contains(chord) }
+            return true
         }
+    }
+
+    /// True when this binding could be confused with `other` — same trigger key
+    /// and modifiers, differing only by a chord key. The lock has to wait a
+    /// moment in that case to see whether the chord key is coming.
+    func collides(with other: KeyBinding) -> Bool {
+        kind == .combo && other.kind == .combo
+            && keyCode == other.keyCode
+            && modifierFlags == other.modifierFlags
+            && chordKeyCode != other.chordKeyCode
     }
 
     /// True while the modifier is physically down. `bareModifier` only.
@@ -106,7 +130,11 @@ struct KeyBinding: Codable, Equatable, Hashable {
         case .plainKey:
             return KeyBinding.keyName(keyCode)
         case .combo:
-            return KeyBinding.flagSymbols(modifierFlags) + KeyBinding.keyName(keyCode)
+            let mods = KeyBinding.flagSymbols(modifierFlags)
+            if let chord = chordKeyCode {
+                return mods + KeyBinding.keyName(chord) + "+" + KeyBinding.keyName(keyCode)
+            }
+            return mods + KeyBinding.keyName(keyCode)
         }
     }
 
@@ -199,6 +227,7 @@ struct KeyBinding: Codable, Equatable, Hashable {
         keyCode       = try c.decode(Int64.self, forKey: .keyCode)
         deviceMask    = try c.decodeIfPresent(UInt64.self, forKey: .deviceMask) ?? 0
         modifierFlags = try c.decodeIfPresent(UInt64.self, forKey: .modifierFlags) ?? 0
+        chordKeyCode  = try c.decodeIfPresent(Int64.self, forKey: .chordKeyCode)
         if let k = try c.decodeIfPresent(KeyKind.self, forKey: .kind) {
             kind = k
         } else {
@@ -207,10 +236,12 @@ struct KeyBinding: Codable, Equatable, Hashable {
         }
     }
 
-    init(keyCode: Int64, deviceMask: UInt64, modifierFlags: UInt64, kind: KeyKind) {
+    init(keyCode: Int64, deviceMask: UInt64, modifierFlags: UInt64,
+         chordKeyCode: Int64? = nil, kind: KeyKind) {
         self.keyCode = keyCode
         self.deviceMask = deviceMask
         self.modifierFlags = modifierFlags
+        self.chordKeyCode = chordKeyCode
         self.kind = kind
     }
 
@@ -221,10 +252,11 @@ struct KeyBinding: Codable, Equatable, Hashable {
         try c.encode(keyCode, forKey: .keyCode)
         try c.encode(deviceMask, forKey: .deviceMask)
         try c.encode(modifierFlags, forKey: .modifierFlags)
+        try c.encodeIfPresent(chordKeyCode, forKey: .chordKeyCode)
         try c.encode(kind, forKey: .kind)
     }
 
     private enum CodingKeys: String, CodingKey {
-        case keyCode, deviceMask, modifierFlags, kind, isModifier
+        case keyCode, deviceMask, modifierFlags, chordKeyCode, kind, isModifier
     }
 }

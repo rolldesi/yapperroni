@@ -19,6 +19,10 @@ struct KeyRecorderField: View {
     @State private var pendingModifier: KeyBinding?
     @State private var sawKeyDown = false
     @State private var problem: String?
+    /// First key of a possible chord, still held. ⌥R+Space arrives as R then
+    /// Space, so the first key is the one held and the second is the trigger.
+    @State private var chordFirst: Int64?
+    @State private var chordFlags: UInt64 = 0
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
@@ -50,8 +54,9 @@ struct KeyRecorderField: View {
         problem = nil
         pendingModifier = nil
         sawKeyDown = false
+        chordFirst = nil
         recording = true
-        monitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .flagsChanged]) { event in
+        monitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .keyUp, .flagsChanged]) { event in
             handle(event)
             return nil   // swallow, so it does not reach the UI behind us
         }
@@ -60,6 +65,7 @@ struct KeyRecorderField: View {
     private func cancel() {
         recording = false
         problem = nil
+        chordFirst = nil
         teardown()
     }
 
@@ -72,13 +78,30 @@ struct KeyRecorderField: View {
         let flags = KeyBinding.normalize(UInt64(event.modifierFlags.rawValue))
 
         switch event.type {
+        case .keyUp:
+            // Released without a second key — it was a plain combo after all.
+            if let first = chordFirst, Int64(event.keyCode) == first {
+                chordFirst = nil
+                commit(KeyBinding(keyCode: first, deviceMask: 0,
+                                  modifierFlags: chordFlags, kind: .combo))
+            }
+
         case .keyDown:
             if event.keyCode == 53, flags == 0 { return cancel() }   // escape
             sawKeyDown = true
 
-            if flags != 0 {
+            // Second key while the first is still held: that is the chord.
+            if let first = chordFirst, Int64(event.keyCode) != first, flags != 0 {
+                chordFirst = nil
                 commit(KeyBinding(keyCode: Int64(event.keyCode), deviceMask: 0,
-                                  modifierFlags: flags, kind: .combo))
+                                  modifierFlags: flags, chordKeyCode: first, kind: .combo))
+                return
+            }
+
+            if flags != 0 {
+                // Hold it: a second key may follow, making this a chord.
+                chordFirst = Int64(event.keyCode)
+                chordFlags = flags
             } else if KeyBinding.functionKeys.contains(where: { $0.binding.keyCode == Int64(event.keyCode) }) {
                 commit(KeyBinding(keyCode: Int64(event.keyCode), deviceMask: 0,
                                   modifierFlags: 0, kind: .plainKey))
