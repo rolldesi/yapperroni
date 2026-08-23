@@ -12,6 +12,30 @@ enum Config {
     static let defaultMinPeakRMS: Float = 0.0005
     static let defaultMinSpeechSeconds: Double = 0.3
 
+    // MARK: - Runaway sessions
+
+    /// Hard ceiling on one dictation. A hands-free session has nothing to end
+    /// it but a second keypress, so a forgotten lock (or a key that never came
+    /// back up) would hold the mic — and voice processing, which ducks every
+    /// other app — forever.
+    static let maxSessionSeconds: Double = 180
+    /// Hands-free only. A momentary hold is never cut off for going quiet:
+    /// pausing mid-sentence to think is normal there.
+    static let maxSilenceSeconds: Double = 3
+    /// What counts as "not speaking", measured on the 16 kHz output RMS.
+    /// Reference points: speaking into the built-in mic reads 0.05–0.2; the
+    /// same voice across a room via speakers read 0.0094. This is the knob to
+    /// turn if a quiet talker gets cut off, or if a noisy room never times out
+    /// — voice processing's automatic gain raises the floor during silence.
+    static let silenceRMS: Float = 0.005
+
+    /// Whisper loops when it runs out of speech: it emits the same clause over
+    /// and over. A phrase this long or shorter, repeated back-to-back
+    /// `loopRepeats` times, is a loop and not a person repeating themselves.
+    static let loopWindowWords = 7
+    static let loopMinWindowWords = 3
+    static let loopRepeats = 3
+
     static let supportDir = FileManager.default
         .homeDirectoryForCurrentUser
         .appendingPathComponent("Library/Application Support/Yapperroni", isDirectory: true)

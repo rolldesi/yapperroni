@@ -85,7 +85,7 @@ enum CleanupError: Error, CustomStringConvertible {
         case .noKey:          return "no API key set"
         case .noModel:        return "no model set"
         case .badURL:         return "invalid endpoint URL"
-        case .http(let code): return "HTTP \(code)"
+        case .http(let code): return code == 429 ? "rate limited" : "HTTP \(code)"
         case .emptyResponse:  return "empty response"
         case .refused:        return "the model declined this text"
         case .transport(let m): return m
@@ -132,20 +132,63 @@ enum Cleanup {
                                       system: system, text: trimmed, baseURL: baseURL)
         request.timeoutInterval = timeout
 
-        let (data, response): (Data, URLResponse)
-        do {
-            (data, response) = try await URLSession.shared.data(for: request)
-        } catch {
-            throw CleanupError.transport(error.localizedDescription)
-        }
+        var data = Data()
+        var attempt = 0
+        while true {
+            let response: URLResponse
+            do {
+                (data, response) = try await URLSession.shared.data(for: request)
+            } catch {
+                throw CleanupError.transport(error.localizedDescription)
+            }
 
-        let code = (response as? HTTPURLResponse)?.statusCode ?? 0
-        guard (200..<300).contains(code) else { throw CleanupError.http(code) }
+            let code = (response as? HTTPURLResponse)?.statusCode ?? 0
+            if (200..<300).contains(code) { break }
+
+            guard let wait = retryDelay(after: code, response: response, attempt: attempt),
+                  attempt < maxRetries
+            else { throw CleanupError.http(code) }
+
+            attempt += 1
+            Log.write(String(format: "cleanup %@ HTTP %d — retry %d in %.1fs",
+                             provider.rawValue, code, attempt, wait))
+            try? await Task.sleep(nanoseconds: UInt64(wait * 1_000_000_000))
+        }
 
         let cleaned = try parse(data, provider: provider)
         let out = cleaned.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !out.isEmpty else { throw CleanupError.emptyResponse }
         return out
+    }
+
+    // MARK: - Retrying
+
+    /// Statuses that mean "the request was fine, come back later". Anything
+    /// else — a bad key, a model that does not exist, a malformed body — will
+    /// fail again identically, so retrying it only delays the raw transcript.
+    private static let retryStatuses: Set<Int> = [408, 429, 500, 502, 503, 504]
+    private static let maxRetries = 2
+    /// The user is waiting with a cursor in a document and the fallback is
+    /// inserting the raw transcript, which is already correct. A provider
+    /// asking for a minute is telling us to give up, not to wait.
+    private static let maxRetryWait: TimeInterval = 3
+
+    /// How long to wait before retrying, or nil to give up now.
+    ///
+    /// `Retry-After` is honoured when the provider sends one and it is short
+    /// enough to be worth waiting for; otherwise a short exponential backoff,
+    /// which is what a burst of presses against a per-minute quota needs.
+    static func retryDelay(after code: Int, response: URLResponse,
+                                   attempt: Int) -> TimeInterval? {
+        guard retryStatuses.contains(code) else { return nil }
+        if let header = (response as? HTTPURLResponse)?
+            .value(forHTTPHeaderField: "retry-after"),
+           let asked = TimeInterval(header.trimmingCharacters(in: .whitespaces)) {
+            // An HTTP-date instead of seconds parses as nil and falls through
+            // to the backoff, which is the safe direction.
+            return asked <= maxRetryWait ? max(asked, 0.1) : nil
+        }
+        return min(0.5 * pow(2, Double(attempt)), maxRetryWait)
     }
 
     /// Models installed in a local Ollama server, so the picker can list what

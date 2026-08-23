@@ -18,6 +18,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var targetApp: NSRunningApplication?
     private var targetAppName = "?"
     private var levelTimer: Timer?
+    /// Runaway-session watchdog. A hands-free recording has nothing to end it
+    /// but a second keypress, so it ends itself on a ceiling: total length,
+    /// a stretch of silence, or whisper looping on one clause.
+    private var sessionStart = Date()
+    private var lastVoiceAt = Date()
+    private var voicePeak: Float = 0
+    private var lastSilenceCheck = Date()
+    /// Silence only ends a session that has no key held down to end it.
+    private var handsFree = false
+    /// Silence cannot end a session that has not heard anything yet: pressing
+    /// the key and then gathering your thought is normal, and the engine plus
+    /// voice-processing warmup already eats part of the first second.
+    private var heardVoice = false
+    /// When the last dictation ended. Starting capture tears the audio engine
+    /// down and builds it back up, and AVAudioEngine is not safe to churn at
+    /// key-repeat speed — a held-down or hammered hotkey would otherwise
+    /// restart it dozens of times a second.
+    private var lastEndedAt = Date.distantPast
+    private static let minRestartGap: TimeInterval = 0.3
     private var wordCount = 0
     /// Transcription is async. Without this, starting again before it finishes
     /// interleaves two Injector calls, and the second saves the first one's
@@ -141,6 +160,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             Log.write("press   ignored — previous utterance still transcribing")
             flash("Still transcribing…", 1.0); hotkey.disengage(); return
         }
+        // Dropped, not queued: a press this close to the last release is a
+        // hammered key, and honouring it restarts the audio engine mid-teardown.
+        guard Date().timeIntervalSince(lastEndedAt) >= AppDelegate.minRestartGap else {
+            Log.write("press   ignored — too soon after the last release")
+            hotkey.disengage(); return
+        }
         // Password fields enable secure input, which makes both the tap and the
         // paste no-ops. Say so instead of failing silently.
         if Hotkey.secureInputActive {
@@ -159,6 +184,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         state.dictating = true
+        sessionStart = Date()
+        lastVoiceAt = sessionStart
+        lastSilenceCheck = sessionStart
+        voicePeak = 0
+        heardVoice = false
+        handsFree = (source == .lock) || settings.activation == .toggle
         Log.write("press   source=\(source == .lock ? "lock" : "hold") target=\(targetAppName)")
         if settings.soundFeedback { NSSound(named: "Tink")?.play() }
 
@@ -175,6 +206,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 onPartial: { [weak self] text in
                     guard let self, self.recorder.isRecording else { return }
                     self.hud.setPartial(text)
+                    // Words already typed cannot be retracted, but a loop that
+                    // is left running keeps typing the same clause forever.
+                    if StreamingTranscriber.isLooping(StreamingTranscriber.words(text)) {
+                        self.autoStop("transcript looping")
+                    }
                 })
             streamer = s
             s.start(sample: { [weak self] in self?.recorder.snapshot() ?? [] })
@@ -183,11 +219,54 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         levelTimer = Timer.scheduledTimer(withTimeInterval: 1.0 / 30, repeats: true) { [weak self] _ in
             guard let self else { return }
             self.hud.setLevel(self.recorder.level)
+            self.watchdogTick()
         }
+    }
+
+    /// Ends a session that has run away: a lock left on, a key that never came
+    /// back up, an open mic in an empty room. Whatever was said still goes
+    /// through the normal transcribe-and-insert path — the ceiling stops the
+    /// recording, it does not throw the speech away.
+    private func watchdogTick() {
+        guard recorder.isRecording else { return }
+        let now = Date()
+
+        if now.timeIntervalSince(sessionStart) >= Config.maxSessionSeconds {
+            return autoStop("\(Int(Config.maxSessionSeconds / 60)) minute limit")
+        }
+        guard handsFree else { return }
+
+        // `recorder.level` is overwritten per audio buffer, so a 30 Hz sample
+        // of it misses buffers. Accumulate the peak between checks instead.
+        voicePeak = max(voicePeak, recorder.level)
+        guard now.timeIntervalSince(lastSilenceCheck) >= 1 else { return }
+        lastSilenceCheck = now
+        if voicePeak >= Config.silenceRMS {
+            lastVoiceAt = now
+            heardVoice = true
+        }
+        voicePeak = 0
+
+        guard heardVoice else { return }
+        if now.timeIntervalSince(lastVoiceAt) >= Config.maxSilenceSeconds {
+            autoStop("\(Int(Config.maxSilenceSeconds))s of silence")
+        }
+    }
+
+    /// Stops as if the user had pressed the key themselves.
+    private func autoStop(_ why: String) {
+        guard recorder.isRecording else { return }
+        Log.write("auto    stopping — \(why)")
+        // The lock's state machine still thinks it is recording; without this
+        // the next press of the lock key would only clear it, not start again.
+        hotkey.disengage()
+        endDictation()
+        flash("Stopped — \(why)", 1.6)
     }
 
     private func endDictation() {
         guard recorder.isRecording else { return }
+        lastEndedAt = Date()
         levelTimer?.invalidate(); levelTimer = nil
         // Stop ticking before the recorder is cleared: a tick starting in that
         // window would read an emptied buffer.
@@ -232,10 +311,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let elapsed = Date().timeIntervalSince(t0)
 
             DispatchQueue.main.async {
-                self.isTranscribing = false
+                // NOT cleared here: cleanup is a network call with retries, and
+                // a second utterance landing during it interleaves two Injector
+                // calls — the second saves the first one's pasted text as the
+                // "original" clipboard to restore. Cleared at every exit below.
                 Log.write(String(format: "result  %.2fs \"%@\"", elapsed, raw))
 
                 guard !raw.isEmpty else {
+                    self.isTranscribing = false
                     Log.write("        empty after cleaning (silence or hallucination filter)")
                     self.hud.show(.message("No speech detected"), at: self.settings.hudPosition)
                     self.hud.hide(after: 1.2)
@@ -243,6 +326,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 }
 
                 guard self.settings.cleanupEnabled else {
+                    self.isTranscribing = false
                     self.deliver(raw, target: target, seconds: seconds,
                                  elapsed: elapsed, appName: appName)
                     return
@@ -272,6 +356,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     }
                     let final = text
                     await MainActor.run {
+                        self.isTranscribing = false
                         self.deliver(final, target: target, seconds: seconds,
                                      elapsed: elapsed, appName: appName)
                     }

@@ -375,6 +375,76 @@ func selftestAlign() -> Never {
           emitted: ["completely", "different", "words", "here"],
           final: ["nothing", "matches"], want: nil)
 
+    print("loop detection — stopping a runaway session:")
+    func loops(_ what: String, _ text: String, _ want: Bool) {
+        let got = StreamingTranscriber.isLooping(StreamingTranscriber.words(text))
+        let ok = got == want
+        if !ok { failures += 1 }
+        print("  \(ok ? "ok  " : "FAIL") \(what)")
+    }
+
+    loops("whisper stuck on one clause",
+          "so anyway the thing is the thing is the thing is the thing is", true)
+    loops("a longer clause, three times over",
+          "thanks for watching this video thanks for watching this video thanks for watching this video",
+          true)
+    loops("ordinary speech is left alone",
+          "the quick brown fox jumps over the lazy dog and then it runs away", false)
+    loops("saying no six times is not a loop",
+          "no no no no no no", false)
+    loops("counting out loud is not a loop",
+          "one two one two one two one two", false)
+    loops("twice is a person repeating themselves",
+          "let me say that again let me say that again", false)
+    loops("empty transcript", "", false)
+    loops("punctuation and case do not hide a loop",
+          "It is what it is. it is what it is, IT IS WHAT IT IS!", true)
+
+    print(failures == 0 ? "PASS" : "FAIL: \(failures) case(s)")
+    exit(failures == 0 ? 0 : 1)
+}
+
+/// Retry policy for cleanup calls. A rate-limited provider must not lose the
+/// transcript, and must not make the user wait longer than typing it again.
+func selftestRetry() -> Never {
+    var failures = 0
+    func resp(_ code: Int, retryAfter: String? = nil) -> URLResponse {
+        HTTPURLResponse(url: URL(string: "https://example.invalid")!,
+                        statusCode: code, httpVersion: nil,
+                        headerFields: retryAfter.map { ["Retry-After": $0] })!
+    }
+    func check(_ what: String, _ got: TimeInterval?, _ want: TimeInterval?) {
+        let ok = got == want
+        if !ok { failures += 1 }
+        print("  \(ok ? "ok  " : "FAIL") \(what)")
+        if !ok { print("        got \(got as Any)  want \(want as Any)") }
+    }
+
+    check("429 with no header — backoff",
+          Cleanup.retryDelay(after: 429, response: resp(429), attempt: 0), 0.5)
+    check("429 again — backoff doubles",
+          Cleanup.retryDelay(after: 429, response: resp(429), attempt: 1), 1.0)
+    check("backoff is capped",
+          Cleanup.retryDelay(after: 429, response: resp(429), attempt: 9), 3.0)
+    check("a short Retry-After is honoured",
+          Cleanup.retryDelay(after: 429, response: resp(429, retryAfter: "2"), attempt: 0), 2.0)
+    check("Retry-After: 0 still waits a tick",
+          Cleanup.retryDelay(after: 429, response: resp(429, retryAfter: "0"), attempt: 0), 0.1)
+    check("a long Retry-After means give up, not wait a minute",
+          Cleanup.retryDelay(after: 429, response: resp(429, retryAfter: "60"), attempt: 0), nil)
+    check("an HTTP-date Retry-After falls through to the backoff",
+          Cleanup.retryDelay(after: 503,
+                             response: resp(503, retryAfter: "Wed, 21 Oct 2026 07:28:00 GMT"),
+                             attempt: 0), 0.5)
+    check("503 is transient",
+          Cleanup.retryDelay(after: 503, response: resp(503), attempt: 0), 0.5)
+    check("401 is not — a bad key fails the same way twice",
+          Cleanup.retryDelay(after: 401, response: resp(401), attempt: 0), nil)
+    check("404 is not — the model does not exist",
+          Cleanup.retryDelay(after: 404, response: resp(404), attempt: 0), nil)
+    check("400 is not — the body is wrong",
+          Cleanup.retryDelay(after: 400, response: resp(400), attempt: 0), nil)
+
     print(failures == 0 ? "PASS" : "FAIL: \(failures) case(s)")
     exit(failures == 0 ? 0 : 1)
 }
@@ -443,6 +513,8 @@ case "--selftest-align":
     selftestAlign()
 case "--selftest-vocab":
     selftestVocab()
+case "--selftest-retry":
+    selftestRetry()
 case "--selftest-streaming":
     guard args.count > 2 else { print("usage: yapperroni --selftest-streaming <file.wav>"); exit(2) }
     selftestStreaming(args[2])

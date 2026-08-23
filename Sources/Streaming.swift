@@ -188,6 +188,37 @@ final class StreamingTranscriber {
         s.split(whereSeparator: { $0 == " " || $0 == "\n" || $0 == "\t" }).map(String.init)
     }
 
+    /// True when the tail of the transcript is one phrase repeating.
+    ///
+    /// Whisper loops when the audio runs out of speech: it decodes the same
+    /// clause over and over and never stops. In a live session that keeps
+    /// typing forever, so the session has to end itself.
+    ///
+    /// Only the tail is examined, and only windows of at least
+    /// `Config.loopMinWindowWords` words: two words repeated three times is
+    /// someone saying "no no no no no no", not a decoder stuck in a cycle.
+    ///
+    /// Static and pure so it can be tested directly — see `--selftest-align`.
+    static func isLooping(_ ws: [String],
+                          minWindow: Int = Config.loopMinWindowWords,
+                          maxWindow: Int = Config.loopWindowWords,
+                          repeats: Int = Config.loopRepeats) -> Bool {
+        let norm = ws.map(normalize).filter { !$0.isEmpty }
+        guard minWindow >= 1, repeats >= 2 else { return false }
+        for n in minWindow...max(minWindow, maxWindow) {
+            let need = n * repeats
+            // `need` only grows with n, so once the tail is too short to hold
+            // one more window there is nothing longer left to check.
+            guard norm.count >= need else { break }
+            let tail = Array(norm.suffix(need))
+            let first = Array(tail[0 ..< n])
+            if (1 ..< repeats).allSatisfy({ Array(tail[$0 * n ..< ($0 + 1) * n]) == first }) {
+                return true
+            }
+        }
+        return false
+    }
+
     /// Compared loosely: whisper adds and removes punctuation and changes case
     /// as context arrives, and re-emitting a word because a comma appeared
     /// would duplicate it in the user's document.
