@@ -15,6 +15,10 @@ final class HUD {
     private let meter = NSView()
     private var meterWidth: NSLayoutConstraint!
     private var pulse: Timer?
+    /// A delayed hide belongs to the flash that scheduled it. Once the next
+    /// utterance shows the pill again, that older hide must not fire — it would
+    /// order out the panel a session that is still running just put on screen.
+    private var pendingHide: DispatchWorkItem?
 
     init() {
         panel = NSPanel(
@@ -91,6 +95,7 @@ final class HUD {
     /// with makeKey.
     func show(_ state: State, at position: HUDPosition = .bottom) {
         guard position != .hidden else { return }
+        cancelPendingHide()
         switch state {
         case .listening:
             label.stringValue = "Listening…"
@@ -130,10 +135,21 @@ final class HUD {
 
     func hide(after delay: TimeInterval = 0) {
         stopPulse()
+        // A newer hide supersedes an older one too: a 1.6s flash followed by a
+        // 1.0s one must not be torn down on the first timer's schedule.
+        cancelPendingHide()
         guard delay > 0 else { return panel.orderOut(nil) }
-        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+        let work = DispatchWorkItem { [weak self] in
+            self?.pendingHide = nil
             self?.panel.orderOut(nil)
         }
+        pendingHide = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
+    }
+
+    private func cancelPendingHide() {
+        pendingHide?.cancel()
+        pendingHide = nil
     }
 
     private func startPulse() {
