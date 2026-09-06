@@ -23,8 +23,9 @@ curl -fsSL -o "$TMP/$TARBALL" \
   "https://github.com/$REPO/releases/latest/download/$TARBALL"
 
 echo "==> installing to /Applications"
-# A running copy cannot be replaced underneath itself.
-osascript -e 'quit app "Yapperroni"' 2>/dev/null || true
+# A running copy cannot be replaced underneath itself. The accessory app has no
+# scriptable quit, so the polite AppleScript form silently does nothing.
+pkill -x Yapperroni 2>/dev/null || true
 rm -rf "$APP"
 tar -xzf "$TMP/$TARBALL" -C /Applications
 
