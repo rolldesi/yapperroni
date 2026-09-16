@@ -27,12 +27,18 @@ final class HUD {
             backing: .buffered,
             defer: false
         )
-        panel.level = .statusBar
+        // Above the shield a fullscreen Space puts over the status-bar level.
+        // At .statusBar the pill renders behind it and the user sees nothing.
+        panel.level = .popUpMenu
         panel.isOpaque = false
         panel.backgroundColor = .clear
         panel.hasShadow = true
         panel.ignoresMouseEvents = true
-        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
+        // No .stationary: it pins the panel to the Space it was born on, which
+        // is the opposite of .canJoinAllSpaces. With it set, dictating into a
+        // fullscreen app left the pill behind on the desktop Space — ordered
+        // front, on screen, and occluded by the whole fullscreen window.
+        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
         panel.hidesOnDeactivate = false
 
         let blur = NSVisualEffectView()
@@ -116,6 +122,43 @@ final class HUD {
         }
         place(position)
         panel.orderFrontRegardless()
+        // Occlusion is reported asynchronously, so a read taken here is the
+        // previous state — always "hidden" for a window just ordered front.
+        // The settled sample a moment later is the one worth believing.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
+            self?.logState("show")
+        }
+    }
+
+    /// The pill is the one part of this app with no trace in the log: when it
+    /// fails to appear, nothing distinguishes "never asked to show" from
+    /// "shown somewhere off screen" from "shown and drawn empty". These three
+    /// fields separate them — a caller bug logs nothing at all, a placement bug
+    /// logs an off-screen frame, and an occlusion bug logs visible=true with
+    /// occluded=true.
+    private func logState(_ what: String) {
+        let f = panel.frame
+        let screen = NSScreen.main.map { "\(Int($0.frame.width))x\(Int($0.frame.height))" } ?? "nil"
+        Log.write(String(format: "hud     %@ visible=%@ occluded=%@ frame=%.0f,%.0f %.0fx%.0f screen=%@ above=[%@]",
+                         what,
+                         panel.isVisible ? "true" : "false",
+                         panel.occlusionState.contains(.visible) ? "false" : "true",
+                         f.origin.x, f.origin.y, f.size.width, f.size.height,
+                         screen, windowsAbove()))
+    }
+
+    /// Names whatever the window server has stacked on top of the pill.
+    /// "Occluded" alone says the pill lost; this says to whom.
+    private func windowsAbove() -> String {
+        let info = CGWindowListCopyWindowInfo(
+            [.optionOnScreenAboveWindow, .excludeDesktopElements],
+            CGWindowID(panel.windowNumber)) as? [[String: Any]] ?? []
+        let names = info.prefix(6).map { w -> String in
+            let owner = w[kCGWindowOwnerName as String] as? String ?? "?"
+            let layer = w[kCGWindowLayer as String] as? Int ?? 0
+            return "\(owner):\(layer)"
+        }
+        return names.joined(separator: " ")
     }
 
     /// Live partial transcript, so you can see it keeping up with you.
@@ -142,14 +185,17 @@ final class HUD {
         let work = DispatchWorkItem { [weak self] in
             self?.pendingHide = nil
             self?.panel.orderOut(nil)
+            self?.logState("hide fired")
         }
         pendingHide = work
         DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
     }
 
     private func cancelPendingHide() {
-        pendingHide?.cancel()
+        guard let p = pendingHide else { return }
+        p.cancel()
         pendingHide = nil
+        Log.write("hud     hide cancelled")
     }
 
     private func startPulse() {
