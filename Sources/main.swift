@@ -47,7 +47,7 @@ func selftestWhisper(_ wav: String, model: String? = nil,
     }
     print(String(format: "load: %.2fs", Date().timeIntervalSince(l0)))
     let t0 = Date()
-    let text = w.transcribe(pcm, options: options)
+    let text = StreamingTranscriber.collapseRepeats(w.transcribe(pcm, options: options))
     let dt = Date().timeIntervalSince(t0)
     w.close()
     print("transcript: \"\(text)\"")
@@ -509,6 +509,28 @@ func selftestAlign() -> Never {
     loops("punctuation and case do not hide a loop",
           "It is what it is. it is what it is, IT IS WHAT IT IS!", true)
 
+    print("batch loop removal:")
+    func collapsed(_ what: String, _ text: String, _ want: String) {
+        let got = StreamingTranscriber.collapseRepeats(text)
+        let ok = got == want
+        if !ok { failures += 1 }
+        print("  \(ok ? "ok  " : "FAIL") \(what)")
+        if !ok { print("        got \"\(got)\"") }
+    }
+    collapsed("a looped sentence is cut to one",
+              "We agree. The UK has been given to the EU. The UK has been given to the EU. The UK has been given to the EU. Next point.",
+              "We agree. The UK has been given to the EU. Next point.")
+    collapsed("case and punctuation do not hide it",
+              "It is what it is. it is what it is! Fine.", "It is what it is. Fine.")
+    collapsed("short repeats are a person", "No. No. We disagree.", "No. No. We disagree.")
+    collapsed("the same sentence later on is kept",
+              "The vote is today. Then something else. The vote is today.",
+              "The vote is today. Then something else. The vote is today.")
+    collapsed("decimals and abbreviations are not split", "Growth was 2.5 percent in the U.S. economy.",
+              "Growth was 2.5 percent in the U.S. economy.")
+    collapsed("no punctuation at all", "just words here", "just words here")
+    collapsed("empty", "", "")
+
     print(failures == 0 ? "PASS" : "FAIL: \(failures) case(s)")
     exit(failures == 0 ? 0 : 1)
 }
@@ -633,6 +655,66 @@ func selftestChunk() -> Never {
     exit(failures == 0 ? 0 : 1)
 }
 
+/// Plays a clip inside this process and records it back through the
+/// computer-audio tap — scoped to this process and muted, so the clip never
+/// reaches the speakers and every other app is left alone. Then transcribes
+/// the capture with each model in turn. Launch with `open` (the System Audio
+/// Recording grant is the app's). Text results go to `--out` as JSON; the
+/// captured audio stays in memory like any other recording.
+func selftestCapture(_ wav: String, models: [String], options: DecodeOptions, out: String?) -> Never {
+    func say(_ m: String) { print(m); Log.write("capture  \(m)") }
+    let url = URL(fileURLWithPath: wav)
+    guard let file = try? AVAudioFile(forReading: url) else { say("FAIL: cannot read \(wav)"); exit(1) }
+    let clipSecs = Double(file.length) / file.processingFormat.sampleRate
+
+    // The player must be running before the tap: a process has no audio
+    // object for the tap to target until it has talked to coreaudiod.
+    let engine = AVAudioEngine()
+    let player = AVAudioPlayerNode()
+    engine.attach(player)
+    engine.connect(player, to: engine.mainMixerNode, format: file.processingFormat)
+    do { try engine.start() } catch { say("FAIL: player engine: \(error)"); exit(1) }
+
+    let r = Recorder()
+    do {
+        try r.start(voiceIsolation: false, input: .system,
+                    systemScope: .process(getpid(), muted: true))
+    } catch { say("FAIL: \(error)"); exit(1) }
+
+    say(String(format: "playing %.0fs muted through the computer-audio tap (nothing on the speakers)…", clipSecs))
+    var done = false
+    player.scheduleFile(file, at: nil) { done = true }
+    player.play()
+    let t0 = Date()
+    while !done && Date().timeIntervalSince(t0) < clipSecs + 30 {
+        RunLoop.current.run(until: Date().addingTimeInterval(0.25))
+    }
+    RunLoop.current.run(until: Date().addingTimeInterval(0.5))
+    let pcm = r.stop()
+    engine.stop()
+    let secs = Double(pcm.count) / Config.sampleRate
+    say(String(format: "captured %.1fs of %.1fs in %.1fs wall, peak100ms %.4f",
+               secs, clipSecs, Date().timeIntervalSince(t0), Recorder.peakRMS(pcm)))
+    guard Recorder.peakRMS(pcm) > 0 else { say("FAIL: exact silence — System Audio Recording not granted"); exit(1) }
+
+    var results: [[String: Any]] = []
+    for name in models {
+        let path = Settings.shared.modelPath(for: name)
+        guard let e = Engines.load(path: path) else { say("FAIL: load \(name)"); continue }
+        let t = Date()
+        let text = StreamingTranscriber.collapseRepeats(e.transcribe(pcm, options: options))
+        let dt = Date().timeIntervalSince(t)
+        e.close()
+        say(String(format: "%@ %.1fs (%.1fx): %@", name, dt, secs / dt, String(text.prefix(160))))
+        results.append(["model": name, "elapsed": dt, "captured": secs, "text": text])
+    }
+    if let out, let data = try? JSONSerialization.data(withJSONObject: results, options: .prettyPrinted) {
+        try? data.write(to: URL(fileURLWithPath: out))
+    }
+    say("PASS — \(results.count) of \(models.count) models transcribed the capture")
+    exit(0)
+}
+
 /// A mode saved before language/VAD/input existed must still decode — the
 /// fallback on failure is the default list, which silently wipes the user's
 /// shortcuts and models.
@@ -672,6 +754,16 @@ case "--selftest-chunk":
     selftestChunk()
 case "--selftest-modes":
     selftestModes()
+case "--selftest-capture":
+    // <wav> --models=a,b [--vad] [--lang=xx] [--out=results.json]
+    guard args.count > 2 else { print("usage: yapperroni --selftest-capture <file.wav> --models=a,b [--vad] [--lang=xx] [--out=path]"); exit(2) }
+    let rest = Array(args.dropFirst(3))
+    func value(_ k: String) -> String? { rest.first { $0.hasPrefix(k) }.map { String($0.dropFirst(k.count)) } }
+    var opts = DecodeOptions(vad: rest.contains("--vad"))
+    if let l = value("--lang=") { opts.language = l }
+    selftestCapture(args[2], models: (value("--models=") ?? Settings.shared.modelFilename)
+                        .split(separator: ",").map(String.init),
+                    options: opts, out: value("--out="))
 case "--selftest-audio":
     selftestAudio()
 case "--selftest-hotkey":

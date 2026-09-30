@@ -202,6 +202,32 @@ final class StreamingTranscriber {
     /// someone saying "no no no no no no", not a decoder stuck in a cycle.
     ///
     /// Static and pure so it can be tested directly — see `--selftest-align`.
+    /// Batch counterpart to `isLooping`: a recording is already over, so the
+    /// loop cannot be stopped, only cut out. Drops a sentence of three or more
+    /// words that repeats the one before it. Measured on an 11-minute lecture,
+    /// turbo looped on "The UK has been given to the EU." 77 times.
+    /// Short sentences are kept — "No. No." is a person, not a loop.
+    static func collapseRepeats(_ text: String) -> String {
+        var kept: [String] = []
+        var last: [String] = []
+        var start = text.startIndex
+        var sentences: [String] = []
+        for i in text.indices where ".!?".contains(text[i]) {
+            let next = text.index(after: i)
+            if next == text.endIndex || text[next] == " " {
+                sentences.append(String(text[start..<next])); start = next
+            }
+        }
+        if start < text.endIndex { sentences.append(String(text[start...])) }
+        for s in sentences {
+            let key = words(s).map(normalize)
+            if key.count >= 3, key == last { continue }
+            kept.append(s.trimmingCharacters(in: .whitespaces))
+            last = key
+        }
+        return kept.joined(separator: " ")
+    }
+
     static func isLooping(_ ws: [String],
                           minWindow: Int = Config.loopMinWindowWords,
                           maxWindow: Int = Config.loopWindowWords,

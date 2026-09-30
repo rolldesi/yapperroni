@@ -18,6 +18,14 @@ final class SystemAudioTap {
     private let queue = DispatchQueue(label: "yapperroni.systemaudio", qos: .userInitiated)
     private(set) var isRunning = false
 
+    /// Which output the tap takes. `process` is one app only; `muted` keeps
+    /// that app's audio off the speakers while it is being captured — the
+    /// loopback test uses it to record a clip nobody has to hear.
+    enum Scope {
+        case everything
+        case process(pid_t, muted: Bool)
+    }
+
     enum TapError: Error, CustomStringConvertible {
         case status(String, OSStatus)
         case format(String)
@@ -31,13 +39,21 @@ final class SystemAudioTap {
 
     /// Creates the tap and returns its sample rate, so the caller can build a
     /// converter before the first buffer arrives. `run` starts the flow.
-    func prepare() throws -> Double {
+    func prepare(_ scope: Scope = .everything) throws -> Double {
         stop()
-        let desc = CATapDescription(stereoGlobalTapButExcludeProcesses: [])
+        let desc: CATapDescription
+        switch scope {
+        case .everything:
+            desc = CATapDescription(stereoGlobalTapButExcludeProcesses: [])
+            // Unmuted: the user keeps hearing the lecture while it is recorded.
+            desc.muteBehavior = .unmuted
+        case .process(let pid, let muted):
+            let object = try SystemAudioTap.processObject(pid)
+            desc = CATapDescription(stereoMixdownOfProcesses: [object])
+            desc.muteBehavior = muted ? .muted : .unmuted
+        }
         desc.name = "Yapperroni"
         desc.isPrivate = true
-        // Unmuted: the user keeps hearing the lecture while it is recorded.
-        desc.muteBehavior = .unmuted
         try check(AudioHardwareCreateProcessTap(desc, &tapID), "create process tap")
 
         var asbd = AudioStreamBasicDescription()
@@ -132,6 +148,23 @@ final class SystemAudioTap {
             stop()
             throw TapError.status(what, status)
         }
+    }
+
+    /// A process only has an audio object once it has talked to coreaudiod,
+    /// so the target must already have started its audio engine.
+    static func processObject(_ pid: pid_t) throws -> AudioObjectID {
+        var pid = pid
+        var object = AudioObjectID(kAudioObjectUnknown)
+        var size = UInt32(MemoryLayout<AudioObjectID>.size)
+        var addr = AudioObjectPropertyAddress(mSelector: kAudioHardwarePropertyTranslatePIDToProcessObject,
+                                              mScope: kAudioObjectPropertyScopeGlobal,
+                                              mElement: kAudioObjectPropertyElementMain)
+        let s = AudioObjectGetPropertyData(AudioObjectID(kAudioObjectSystemObject), &addr,
+                                           UInt32(MemoryLayout<pid_t>.size), &pid, &size, &object)
+        guard s == noErr, object != kAudioObjectUnknown else {
+            throw TapError.status("find audio process for pid \(pid)", s)
+        }
+        return object
     }
 
     static func defaultOutputUID() throws -> String {

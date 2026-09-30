@@ -81,10 +81,11 @@ final class Recorder {
     /// Held for the whole session so a mid-recording rebuild re-arms the same way.
     private var wantVoiceProcessing = true
 
-    func start(voiceIsolation: Bool, input: AudioInput = .microphone) throws {
+    func start(voiceIsolation: Bool, input: AudioInput = .microphone,
+               systemScope: SystemAudioTap.Scope = .everything) throws {
         guard !isRecording else { return }
         if input == .system {
-            try armSystem()
+            try armSystem(systemScope)
             isRecording = true
             return
         }
@@ -98,7 +99,7 @@ final class Recorder {
     /// Voice processing does not apply: there is no room and no echo to
     /// remove from a digital mix, and turning it on would duck the very audio
     /// being recorded.
-    private func armSystem() throws {
+    private func armSystem(_ scope: SystemAudioTap.Scope) throws {
         // A dictation just before this leaves voice processing warm for its
         // grace period, and the delayed release skips while recording — so it
         // would stay on, ducking the very call being recorded, for the whole
@@ -113,7 +114,7 @@ final class Recorder {
                 Log.write("audio   could not release voice processing: \(error.localizedDescription)")
             }
         }
-        let rate = try systemTap.prepare()
+        let rate = try systemTap.prepare(scope)
         guard let mono = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: rate,
                                        channels: 1, interleaved: false),
               let conv = AVAudioConverter(from: mono, to: Recorder.outputFormat)

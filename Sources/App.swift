@@ -371,7 +371,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 DispatchQueue.main.async { self?.isTranscribing = false }
                 return
             }
-            let raw = engine.transcribe(pcm, options: options)
+            let decoded = engine.transcribe(pcm, options: options)
+            let raw = StreamingTranscriber.collapseRepeats(decoded)
+            if raw.count < decoded.count {
+                Log.write("        cut a decode loop: \(decoded.count - raw.count) characters of repeats")
+            }
             let elapsed = Date().timeIntervalSince(t0)
 
             DispatchQueue.main.async {
