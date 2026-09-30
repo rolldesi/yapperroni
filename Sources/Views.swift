@@ -844,6 +844,10 @@ struct ModeEditor: View {
                 }
                 Toggle("Skip silence (voice detection)", isOn: $mode.vad)
                     .disabled(!mode.modelFilename.hasSuffix(".bin"))
+                if mode.vad {
+                    Text("Helps when a recording has long silences. On a quiet or muffled speaker it can mistake speech for silence and drop it — leave it off for those.")
+                        .font(.caption).foregroundStyle(.orange)
+                }
                 Toggle("Accurate decoding (slower)", isOn: $mode.accurate)
                     .disabled(!mode.modelFilename.hasSuffix(".bin"))
                 Text(ModeEditor.modelNote(mode.modelFilename))

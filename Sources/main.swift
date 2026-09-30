@@ -733,7 +733,7 @@ func selftestModes() -> Never {
     check("its own fields survive", decoded?.first?.name == "Saved by 1.2"
           && decoded?.first?.binding == RecordingMode.lecture.binding)
     check("missing fields take the defaults", decoded?.first?.language == "auto"
-          && decoded?.first?.vad == true && decoded?.first?.input == .microphone)
+          && decoded?.first?.vad == false && decoded?.first?.input == .microphone)
     let round = try? JSONDecoder().decode(RecordingMode.self,
                                           from: JSONEncoder().encode(RecordingMode.onlineClass))
     check("a current mode round-trips", round == RecordingMode.onlineClass)

@@ -95,7 +95,11 @@ struct RecordingMode: Codable, Equatable, Identifiable {
     var language = "auto"
     /// Silero voice-activity detection before whisper: silence is cut out
     /// instead of decoded, which is where whisper invents its sentences.
-    var vad = true
+    /// Off by default: on a quiet, muffled lecture it judged the lecturer to
+    /// be silence and cut her — 62.3% WER against 25.3% without it (MIT
+    /// 14.73, 10 min). On clean audio it helped by about a point. Worth
+    /// turning on for recordings with long real silences.
+    var vad = false
     var input = AudioInput.microphone
 
     /// ⌥L. Greedy, not accurate: beam search made the long-lecture benchmark
@@ -130,7 +134,7 @@ struct RecordingMode: Codable, Equatable, Identifiable {
     init(name: String, binding: KeyBinding, modelFilename: String,
          voiceIsolation: Bool, live: Bool, output: OutputMode,
          accurate: Bool, maxMinutes: Double, stopOnSilence: Bool,
-         language: String = "auto", vad: Bool = true, input: AudioInput = .microphone) {
+         language: String = "auto", vad: Bool = false, input: AudioInput = .microphone) {
         self.name = name; self.binding = binding; self.modelFilename = modelFilename
         self.voiceIsolation = voiceIsolation; self.live = live; self.output = output
         self.accurate = accurate; self.maxMinutes = maxMinutes; self.stopOnSilence = stopOnSilence
@@ -159,7 +163,7 @@ struct RecordingMode: Codable, Equatable, Identifiable {
         maxMinutes     = try c.decode(Double.self, forKey: .maxMinutes)
         stopOnSilence  = try c.decode(Bool.self, forKey: .stopOnSilence)
         language       = try c.decodeIfPresent(String.self, forKey: .language) ?? "auto"
-        vad            = try c.decodeIfPresent(Bool.self, forKey: .vad) ?? true
+        vad            = try c.decodeIfPresent(Bool.self, forKey: .vad) ?? false
         input          = try c.decodeIfPresent(AudioInput.self, forKey: .input) ?? .microphone
     }
 

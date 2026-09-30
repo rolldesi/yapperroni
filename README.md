@@ -92,7 +92,7 @@ A mode is always press-to-start, press-to-stop. It ships with two:
 | Listens to | microphone | microphone | **computer audio** — the call itself, not the room |
 | Model | Settings → Model | Whisper large-v3-turbo | Whisper large-v3-turbo |
 | Language | English (Settings → Model) | detect automatically | detect automatically |
-| Skip silence (VAD) | off | on | on |
+| Skip silence (VAD) | off | off | off |
 | Decoding | greedy | greedy (beam search is a toggle; it hurt long recordings in testing) | greedy |
 | Background-noise filter | on | off — it treats a lecturer across the room as noise | n/a |
 | Live typing | on | off — it re-transcribes the whole recording every tick | off |
@@ -109,8 +109,10 @@ turbo or Parakeet for anything else. Canary must be told which of its four
 languages it is hearing, or it translates into English.
 
 **Skip silence** runs Silero VAD (bundled, 885 KB) before whisper, so pauses are
-cut instead of decoded — that is where whisper invents "Thank you." It was tuned
-to keep every word on the test clips (threshold 0.35, 300 ms padding).
+cut instead of decoded — that is where whisper invents "Thank you." Off by
+default: on a quiet, muffled lecture it mistook the lecturer for silence and
+cut her (62.3% WER against 25.3% without it). Turn it on for recordings with
+long real silences. Tuned to threshold 0.35 and 300 ms padding.
 
 With turbo's CoreML encoder beside it in the support folder, the encoder runs
 on the Neural Engine: about twice as fast as Metal on an M5. The first load
