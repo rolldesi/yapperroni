@@ -17,6 +17,8 @@
 
     <key>NSMicrophoneUsageDescription</key>
     <string>Yapperroni records your voice while you hold the dictation key and transcribes it on this Mac.</string>
+    <key>NSAudioCaptureUsageDescription</key>
+    <string>Yapperroni records what your Mac is playing — a call or an online class — only while a computer-audio recording mode is on, and transcribes it on this Mac.</string>
     <key>NSAppleEventsUsageDescription</key>
     <string>Yapperroni pastes transcribed text into the app you were using.</string>
 </dict>

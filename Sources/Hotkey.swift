@@ -10,11 +10,12 @@ import Carbon.HIToolbox
 /// its own, and swallowing it would break it everywhere else.
 final class Hotkey {
 
-    enum Source { case hold, lock }
+    /// `mode` indexes `Settings.modes` as it was when the tap was built.
+    enum Source: Equatable { case hold, lock, mode(Int) }
     enum Action: Equatable { case activate, deactivate, none }
     enum Input { case holdDown, holdUp, lockPress }
     /// A keystroke's owner among the swallowed combos, most specific first.
-    enum Combo: Equatable { case quickAdd, lock, quickAddHeldKey, none }
+    enum Combo: Equatable { case quickAdd, mode(Int), lock, quickAddHeldKey, none }
 
     /// Key state, kept separate from the tap so it can be tested without
     /// synthesising events. See `--selftest-toggle`.
@@ -79,6 +80,8 @@ final class Hotkey {
     private var vocab: KeyBinding = .vocabDefault
     private var vocabEnabled = true
     private var mode: ActivationMode = .hold
+    /// Recording-mode combos, aligned with `Settings.modes`; nil when disabled.
+    private var modes: [KeyBinding?] = []
 
     var onActivate: ((Source) -> Void)?
     var onDeactivate: ((Source) -> Void)?
@@ -90,8 +93,10 @@ final class Hotkey {
 
     @discardableResult
     func start(push: KeyBinding, lock: KeyBinding, lockEnabled: Bool,
-               vocab: KeyBinding, vocabEnabled: Bool, mode: ActivationMode) -> Bool {
+               vocab: KeyBinding, vocabEnabled: Bool, mode: ActivationMode,
+               modes: [KeyBinding?] = []) -> Bool {
         stop()
+        self.modes = modes
         self.push = push
         self.lock = lock
         self.lockEnabled = lockEnabled
@@ -178,13 +183,25 @@ final class Hotkey {
         // swallowed: ⌥Space would otherwise also type a space, and ⌥R an "®".
         switch Hotkey.combo(code: code, flags: flags, held: heldKeys,
                             lock: lock, lockEnabled: lockEnabled,
-                            vocab: vocab, vocabEnabled: vocabEnabled) {
+                            vocab: vocab, vocabEnabled: vocabEnabled, modes: modes) {
         case .quickAdd:
             if type == .keyDown, !repeated {
                 cancelPendingLock()
                 fireVocab()
             }
             // Swallow the keyUp too, or the focused app sees an orphaned release.
+            return type == .keyDown || type == .keyUp
+
+        case .mode(let i):
+            // Same toggle as the lock, so a mode key also stops whatever is
+            // recording — one press never starts a second session.
+            // ponytail: no chord wait here, unlike the lock; a mode combo
+            // inside the quick-add chord fires first. Mirror scheduleLock if
+            // someone binds one that way.
+            if type == .keyDown, !repeated {
+                cancelPendingLock()
+                emit(Hotkey.decide(.lockPress, mode: mode, state: &state), .mode(i))
+            }
             return type == .keyDown || type == .keyUp
 
         case .lock:
@@ -254,10 +271,19 @@ final class Hotkey {
     /// system events — see `--selftest-toggle`.
     static func combo(code: Int64, flags: UInt64, held: Set<Int64>,
                       lock: KeyBinding, lockEnabled: Bool,
-                      vocab: KeyBinding, vocabEnabled: Bool) -> Combo {
+                      vocab: KeyBinding, vocabEnabled: Bool,
+                      modes: [KeyBinding?] = []) -> Combo {
         if vocabEnabled, vocab.kind == .combo,
            vocab.matches(keyCode: code, flags: flags, held: held) {
             return .quickAdd
+        }
+        // A mode binding carries the same checks the UI applies to the lock,
+        // so it is tested beside it; before it, so a chord mode beats the lock.
+        if let i = modes.firstIndex(where: {
+            guard let b = $0, b.kind == .combo else { return false }
+            return b.matches(keyCode: code, flags: flags, held: held)
+        }) {
+            return .mode(i)
         }
         if lockEnabled, lock.kind == .combo, lock.matches(keyCode: code, flags: flags) {
             return .lock

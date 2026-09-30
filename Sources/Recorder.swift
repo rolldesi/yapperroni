@@ -1,6 +1,7 @@
 import AVFoundation
 
-/// Captures mic audio and hands back 16 kHz mono float32.
+/// Captures mic audio — or the computer's own output, see `SystemAudioTap` —
+/// and hands back 16 kHz mono float32.
 ///
 /// Two traps live here, both of which produce perfect silence rather than an
 /// error:
@@ -25,6 +26,7 @@ final class Recorder {
     private(set) var rawPeak: Float = 0
     private(set) var tapFormat: AVAudioFormat?
     private var releaseWork: DispatchWorkItem?
+    private let systemTap = SystemAudioTap()
     private var configObserver: NSObjectProtocol?
 
     /// How long voice processing stays warm after a dictation ends.
@@ -76,12 +78,51 @@ final class Recorder {
         }
     }
 
-    func start() throws {
+    /// Held for the whole session so a mid-recording rebuild re-arms the same way.
+    private var wantVoiceProcessing = true
+
+    func start(voiceIsolation: Bool, input: AudioInput = .microphone) throws {
         guard !isRecording else { return }
+        if input == .system {
+            try armSystem()
+            isRecording = true
+            return
+        }
+        wantVoiceProcessing = voiceIsolation
         releaseWork?.cancel()
         releaseWork = nil
         try arm(keepingAudio: false)
         isRecording = true
+    }
+
+    /// Voice processing does not apply: there is no room and no echo to
+    /// remove from a digital mix, and turning it on would duck the very audio
+    /// being recorded.
+    private func armSystem() throws {
+        // A dictation just before this leaves voice processing warm for its
+        // grace period, and the delayed release skips while recording — so it
+        // would stay on, ducking the very call being recorded, for the whole
+        // class. Release it now instead.
+        releaseWork?.cancel()
+        releaseWork = nil
+        if engine.inputNode.isVoiceProcessingEnabled {
+            do {
+                try engine.inputNode.setVoiceProcessingEnabled(false)
+                Log.write("audio   released voice processing for a computer-audio recording")
+            } catch {
+                Log.write("audio   could not release voice processing: \(error.localizedDescription)")
+            }
+        }
+        let rate = try systemTap.prepare()
+        guard let mono = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: rate,
+                                       channels: 1, interleaved: false),
+              let conv = AVAudioConverter(from: mono, to: Recorder.outputFormat)
+        else { systemTap.stop(); throw RecorderError.converterFailed }
+        monoFormat = mono
+        converter = conv
+        rawPeak = 0
+        lock.lock(); samples.removeAll(keepingCapacity: true); lock.unlock()
+        try systemTap.run { [weak self] ptr, n in self?.appendMono(ptr, frames: n) }
     }
 
     /// Builds the tap on whatever format the input device is offering now and
@@ -98,7 +139,7 @@ final class Recorder {
         // Whisper hear speech over background music. It must be set before the
         // engine starts, and it CHANGES the node's format — which is why the
         // tap format is read afterwards, not before.
-        let wantVP = Settings.shared.voiceIsolation
+        let wantVP = wantVoiceProcessing
         if input.isVoiceProcessingEnabled != wantVP {
             do { try input.setVoiceProcessingEnabled(wantVP) }
             catch { Log.write("audio   voice processing unavailable: \(error.localizedDescription)") }
@@ -150,6 +191,9 @@ final class Recorder {
     /// the tap is dead and must be rebuilt on the new format; the audio already
     /// captured is kept.
     private func reconfigure() {
+        // Another app grabbing the mic says nothing about the computer-audio
+        // tap, and re-arming here would start the mic under it.
+        guard !systemTap.isRunning else { return }
         guard isRecording else {
             Log.write("audio   input device reconfigured while idle")
             return
@@ -179,9 +223,13 @@ final class Recorder {
     func stop() -> [Float] {
         guard isRecording else { return [] }
         isRecording = false
-        engine.inputNode.removeTap(onBus: 0)
-        engine.stop()
-        scheduleVoiceProcessingRelease()
+        if systemTap.isRunning {
+            systemTap.stop()
+        } else {
+            engine.inputNode.removeTap(onBus: 0)
+            engine.stop()
+            scheduleVoiceProcessingRelease()
+        }
 
         // Deliberately NOT clearing converter/monoFormat: a tap callback may
         // still be mid-flight and reads both. start() replaces them anyway.
@@ -191,16 +239,16 @@ final class Recorder {
     }
 
     private func append(_ buffer: AVAudioPCMBuffer) {
-        guard let conv = converter, let mono = monoFormat,
-              let src = buffer.floatChannelData else { return }
-
-        let frames = Int(buffer.frameLength)
-        guard frames > 0 else { return }
-
+        guard let src = buffer.floatChannelData else { return }
         // Channel 0 only. Averaging a mic array's channels risks phase
         // cancellation, which would quietly reduce the level instead of
         // improving it.
-        let ch0 = src[0]
+        appendMono(src[0], frames: Int(buffer.frameLength))
+    }
+
+    /// Mono float at `monoFormat`'s rate, from either source.
+    private func appendMono(_ ch0: UnsafePointer<Float>, frames: Int) {
+        guard let conv = converter, let mono = monoFormat, frames > 0 else { return }
         var sq: Float = 0
         for i in 0..<frames { sq += ch0[i] * ch0[i] }
         rawPeak = max(rawPeak, (sq / Float(frames)).squareRoot())

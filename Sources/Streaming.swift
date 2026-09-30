@@ -20,7 +20,8 @@ final class StreamingTranscriber {
     /// Trailing words held back as still-unstable, even when two passes agree.
     static let tailGuard = 2
 
-    private let whisper: Whisper
+    private let whisper: Transcriber
+    private let options: DecodeOptions
     private let onEmit: (String) -> Void
     private let onPartial: (String) -> Void
 
@@ -42,10 +43,12 @@ final class StreamingTranscriber {
     /// Everything actually typed, which is what ended up in the user's document.
     var emittedText: String { emitted.joined(separator: " ") }
 
-    init(whisper: Whisper,
+    init(whisper: Transcriber,
+         options: DecodeOptions = DecodeOptions(),
          onEmit: @escaping (String) -> Void,
          onPartial: @escaping (String) -> Void) {
         self.whisper = whisper
+        self.options = options
         self.onEmit = onEmit
         self.onPartial = onPartial
     }
@@ -86,7 +89,7 @@ final class StreamingTranscriber {
         // interleave with it and emit the same words twice.
         queue.sync {}
 
-        let final = StreamingTranscriber.words(whisper.transcribe(pcm))
+        let final = StreamingTranscriber.words(whisper.transcribe(pcm, options: options))
 
         if let tail = StreamingTranscriber.tailAfter(emitted: emitted, final: final) {
             emit(tail)
@@ -146,7 +149,7 @@ final class StreamingTranscriber {
     // MARK: - One pass
 
     private func tick(_ pcm: [Float]) {
-        let text = whisper.transcribe(pcm)
+        let text = whisper.transcribe(pcm, options: options)
         guard running else { return }
         let now = StreamingTranscriber.words(text)
         guard !now.isEmpty else { return }

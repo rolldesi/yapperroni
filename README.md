@@ -79,6 +79,61 @@ The other lever is the model. `large-v3-turbo` is from 2024 and much better at
 proper nouns, at roughly twice the latency — drop the `.bin` in the support
 folder and pick it in Settings → Model.
 
+## Recording modes
+
+Dictation is the push-to-talk key and the lock. A recording mode is another
+way to record on its own shortcut, with its own model and microphone settings.
+Settings → Recording modes; add as many as you like.
+
+A mode is always press-to-start, press-to-stop. It ships with two:
+
+| | Dictation | Lecture (⌥L) | Online class (⌥O) |
+|---|---|---|---|
+| Listens to | microphone | microphone | **computer audio** — the call itself, not the room |
+| Model | Settings → Model | Whisper large-v3-turbo | Whisper large-v3-turbo |
+| Language | English (Settings → Model) | detect automatically | detect automatically |
+| Skip silence (VAD) | off | on | on |
+| Decoding | greedy | greedy (beam search is a toggle; it hurt long recordings in testing) | greedy |
+| Background-noise filter | on | off — it treats a lecturer across the room as noise | n/a |
+| Live typing | on | off — it re-transcribes the whole recording every tick | off |
+| Ends by itself | 3 min, or 3 s of silence hands-free | 180 min, never on silence | 180 min, never on silence |
+| When finished | paste at cursor | copy to clipboard, saved in History | copy to clipboard, saved in History |
+
+**Computer audio** is a Core Audio process tap: Teams, Zoom or a browser tab
+is recorded digitally, before it reaches the speakers — headphones on or off.
+macOS asks once for System Audio Recording.
+
+**Language** "detect automatically" listens to the first 30 seconds and keeps
+that language for the recording. The bundled `small.en` is English-only; pick
+turbo or Parakeet for anything else. Canary must be told which of its four
+languages it is hearing, or it translates into English.
+
+**Skip silence** runs Silero VAD (bundled, 885 KB) before whisper, so pauses are
+cut instead of decoded — that is where whisper invents "Thank you." It was tuned
+to keep every word on the test clips (threshold 0.35, 300 ms padding).
+
+With turbo's CoreML encoder beside it in the support folder, the encoder runs
+on the Neural Engine: about twice as fast as Metal on an M5. The first load
+compiles it for the chip and takes about 45 s; after that, under a second.
+
+A mode whose model is missing runs on the dictation model rather than refusing
+to record. Only the transcript is kept, never the audio.
+
+### Models
+
+| Model | Engine | Size | Notes |
+|---|---|---|---|
+| Whisper small.en | whisper.cpp, Metal | 181 MB | Bundled. Fastest to load. English only. |
+| Whisper large-v3-turbo | whisper.cpp, Metal | 574 MB | Most accurate here, especially with the vocabulary list filled in. |
+| Parakeet TDT 0.6B v3 | sherpa-onnx, CPU | 643 MB | Fast, punctuated. Ignores the vocabulary list. |
+| Canary 180M Flash | sherpa-onnx, CPU | 210 MB | Smallest. Ignores the vocabulary list. |
+
+`YAPPERRONI_FETCH_MODELS=1 ./build.sh` downloads the last three into
+Application Support. Any whisper `.bin` or sherpa-onnx model folder dropped
+there shows up in the pickers. The NeMo models are decoded in ~28 s windows
+cut at the quietest moment near each boundary, so an hour of lecture never
+has to fit through the encoder at once.
+
 ## Live transcription
 
 On by default. Words are typed as they settle, roughly a second behind you,

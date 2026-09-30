@@ -6,6 +6,10 @@ enum Config {
     static let sampleRate: Double = 16_000
 
     static let defaultModelFilename = "ggml-small.en-q5_1.bin"
+    /// What a new recording mode starts on. Not bundled —
+    /// `YAPPERRONI_FETCH_MODELS=1 ./build.sh` fetches it into the support
+    /// folder; a mode naming a missing model falls back to the dictation model.
+    static let accurateModelFilename = "ggml-large-v3-turbo-q5_0.bin"
     /// Gate on the loudest 100 ms window, not the whole-clip average.
     /// Reference points: speaking into the built-in mic measures 0.05–0.2;
     /// the same audio arriving across a room via speakers measured 0.0094.

@@ -1,6 +1,9 @@
 # whisper.cpp checkout and its build output — fetched by build.sh
 vendor-whisper/
 
+# sherpa-onnx prebuilt dylibs and header — fetched by build.sh
+vendor-sherpa/
+
 # GGML weights, 181 MB, downloaded by build.sh
 models/
 *.bin

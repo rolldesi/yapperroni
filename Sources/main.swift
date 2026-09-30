@@ -31,21 +31,27 @@ func loadWav(_ path: String) -> [Float]? {
     return Array(UnsafeBufferPointer(start: ch, count: Int(out.frameLength)))
 }
 
-func selftestWhisper(_ wav: String) -> Never {
-    print("model: \(Settings.shared.modelPath)")
+/// Any engine: `model` is a name from the support folder or bundle (a `.bin`
+/// or a sherpa-onnx folder), defaulting to the dictation model.
+func selftestWhisper(_ wav: String, model: String? = nil,
+                     options: DecodeOptions = DecodeOptions()) -> Never {
+    let path = Settings.shared.modelPath(for: model ?? Settings.shared.modelFilename)
+    print("model: \(path) \(options)")
     guard let pcm = loadWav(wav) else {
         print("FAIL: could not read \(wav)"); exit(1)
     }
     print("audio: \(pcm.count) samples (\(String(format: "%.2f", Double(pcm.count) / Config.sampleRate))s), rms \(String(format: "%.4f", Recorder.rms(pcm)))")
-    guard let w = Whisper(modelPath: Settings.shared.modelPath) else {
-        print("FAIL: whisper init"); exit(1)
+    let l0 = Date()
+    guard let w = Engines.load(path: path) else {
+        print("FAIL: engine init"); exit(1)
     }
+    print(String(format: "load: %.2fs", Date().timeIntervalSince(l0)))
     let t0 = Date()
-    let text = w.transcribe(pcm)
+    let text = w.transcribe(pcm, options: options)
     let dt = Date().timeIntervalSince(t0)
     w.close()
     print("transcript: \"\(text)\"")
-    print(String(format: "elapsed: %.2fs", dt))
+    print(String(format: "elapsed: %.2fs  (%.1fx realtime)", dt, Double(pcm.count) / Config.sampleRate / dt))
     guard !text.isEmpty else { print("FAIL: empty transcript"); exit(1) }
     print("PASS")
     exit(0)
@@ -66,7 +72,7 @@ func selftestAudio() -> Never {
     print("mic authorization: \(authName)")
 
     let r = Recorder()
-    do { try r.start() } catch {
+    do { try r.start(voiceIsolation: Settings.shared.voiceIsolation) } catch {
         print("FAIL: \(error)"); exit(1)
     }
     print("recording 3s — say something…")
@@ -130,16 +136,21 @@ func selftestHotkey() -> Never {
 /// Proves capture + resample + decode together under the app's own identity.
 /// Results go to the log as well as stdout, so this is meaningful when the
 /// bundle is launched with `open` and has no terminal attached.
-func selftestLoopback(_ wav: String) -> Never {
+///
+/// `system: true` records the computer's own output instead of the mic: the
+/// clip goes out through afplay and comes back through the process tap, never
+/// through the air. Also launch it with `open` — the System Audio Recording
+/// grant belongs to the app, not the terminal.
+func selftestLoopback(_ wav: String, system: Bool = false) -> Never {
     func say(_ m: String) { print(m); Log.write("loopback \(m)") }
 
-    if AVCaptureDevice.authorizationStatus(for: .audio) != .authorized {
+    if !system, AVCaptureDevice.authorizationStatus(for: .audio) != .authorized {
         say("requesting microphone access — answer the prompt (waiting up to 60s)")
         let sem = DispatchSemaphore(value: 0)
         AVCaptureDevice.requestAccess(for: .audio) { _ in sem.signal() }
         _ = sem.wait(timeout: .now() + 60)
     }
-    let auth = AVCaptureDevice.authorizationStatus(for: .audio)
+    let auth = system ? .authorized : AVCaptureDevice.authorizationStatus(for: .audio)
     say("mic authorization: \(auth == .authorized ? "authorized" : "NOT authorized (raw \(auth.rawValue))")")
     guard auth == .authorized else {
         say("FAIL: grant Yapperroni microphone access in System Settings, then rerun")
@@ -147,8 +158,10 @@ func selftestLoopback(_ wav: String) -> Never {
     }
 
     let r = Recorder()
-    do { try r.start() } catch { say("FAIL: \(error)"); exit(1) }
+    do { try r.start(voiceIsolation: Settings.shared.voiceIsolation, input: system ? .system : .microphone) }
+    catch { say("FAIL: \(error)"); exit(1) }
 
+    say("source: \(system ? "computer audio" : "microphone")")
     say("tap format: \(r.tapFormat.map { "\($0.sampleRate)Hz \($0.channelCount)ch" } ?? "?")")
     say("playing \(wav) through the speakers and listening…")
     let task = Process()
@@ -165,6 +178,10 @@ func selftestLoopback(_ wav: String) -> Never {
     say(String(format: "captured %.2fs, raw %.5f, converted rms %.5f, peak100ms %.5f (gate floor %.5f)",
                secs, r.rawPeak, rms, peak, Settings.shared.minPeakRMS))
 
+    if system, peak == 0 {
+        say("FAIL: exact digital silence — System Audio Recording is not granted to Yapperroni")
+        exit(1)
+    }
     guard Double(peak) > Settings.shared.minPeakRMS else {
         say("FAIL: heard nothing — output volume at zero, or capture is returning silence")
         exit(1)
@@ -175,7 +192,7 @@ func selftestLoopback(_ wav: String) -> Never {
     w.close()
     say("heard: \"\(text)\"")
     guard !text.isEmpty else { say("FAIL: audio captured but transcript empty"); exit(1) }
-    say("PASS — mic to text works end to end")
+    say("PASS — \(system ? "computer audio" : "mic") to text works end to end")
     exit(0)
 }
 
@@ -323,6 +340,34 @@ func selftestToggle() -> Never {
              vocabOn: true, lockOn: false, code: 49, held: [15, 49], .quickAdd)
     disabled("lock off — plain Space belongs to nobody",
              vocabOn: true, lockOn: false, code: 49, held: [49], Hotkey.Combo.none)
+
+    print("recording-mode combos:")
+    let modeL = KeyBinding(keyCode: 37, deviceMask: 0, modifierFlags: opt, kind: .combo)   // ⌥L
+    let modeChord = KeyBinding(keyCode: 49, deviceMask: 0, modifierFlags: opt,
+                               chordKeyCode: 37, kind: .combo)                      // ⌥L+Space
+    func modeOwner(_ what: String, code: Int64, held: Set<Int64>,
+                   modes: [KeyBinding?], _ want: Hotkey.Combo) {
+        let got = Hotkey.combo(code: code, flags: opt, held: held,
+                               lock: lock, lockEnabled: true,
+                               vocab: plainVocab, vocabEnabled: true, modes: modes)
+        let ok = got == want
+        if !ok { failures += 1 }
+        print("  \(ok ? "ok  " : "FAIL") \(what)")
+        if !ok { print("        got \(got), want \(want)") }
+    }
+    modeOwner("⌥L is its mode", code: 37, held: [37], modes: [modeL], .mode(0))
+    modeOwner("index follows position", code: 37, held: [37], modes: [nil, modeL], .mode(1))
+    modeOwner("a disabled mode belongs to nobody", code: 37, held: [37], modes: [nil], Hotkey.Combo.none)
+    modeOwner("modes do not steal the lock", code: 49, held: [49], modes: [modeL], .lock)
+    modeOwner("a chord mode beats the lock inside it", code: 49, held: [37, 49], modes: [modeChord], .mode(0))
+    modeOwner("quick-add still beats every mode", code: 15, held: [15],
+              modes: [KeyBinding.vocabDefault], .quickAdd)
+
+    print("mode press shares the lock's toggle:")
+    reset()
+    step(.lockPress, .hold, .activate,   "mode key starts")
+    step(.holdDown,  .hold, .none,       "hold key is inert during a mode recording")
+    step(.lockPress, .hold, .deactivate, "any toggle key stops it")
 
     print("stray hold release with nothing running:")
     reset()
@@ -562,11 +607,71 @@ func selftestVocab() -> Never {
     exit(failures == 0 ? 0 : 1)
 }
 
+/// Long-audio windowing for the sherpa engines: cuts must land in the quiet
+/// stretch, no piece may exceed the limit, and short input is never cut.
+func selftestChunk() -> Never {
+    var failures = 0
+    func check(_ what: String, _ ok: Bool) {
+        if !ok { failures += 1 }
+        print("  \(ok ? "ok  " : "FAIL") \(what)")
+    }
+    let loud: Float = 0.3
+    // 100 samples a "second": loud everywhere except a quiet gap at 85–90.
+    var pcm = [Float](repeating: loud, count: 250)
+    for i in 85..<90 { pcm[i] = 0 }
+    let cuts = SherpaEngine.cutPoints(pcm, maxLen: 100, search: 30, window: 4)
+    check("short input is not cut", SherpaEngine.cutPoints(pcm, maxLen: 300, search: 30, window: 4).isEmpty)
+    check("first cut lands in the quiet gap (\(cuts.first ?? -1))", (85...90).contains(cuts.first ?? -1))
+    var prev = 0
+    var within = true
+    for c in cuts + [pcm.count] { within = within && c - prev <= 100 && c > prev; prev = c }
+    check("no piece exceeds the limit (\(cuts))", within)
+    let flat = [Float](repeating: loud, count: 1000)
+    let flatCuts = SherpaEngine.cutPoints(flat, maxLen: 100, search: 30, window: 4)
+    check("no quiet anywhere still terminates (\(flatCuts.count) cuts)", flatCuts.count >= 9 && flatCuts.count <= 15)
+    print(failures == 0 ? "PASS" : "FAIL: \(failures) case(s)")
+    exit(failures == 0 ? 0 : 1)
+}
+
+/// A mode saved before language/VAD/input existed must still decode — the
+/// fallback on failure is the default list, which silently wipes the user's
+/// shortcuts and models.
+func selftestModes() -> Never {
+    var failures = 0
+    func check(_ what: String, _ ok: Bool) {
+        if !ok { failures += 1 }
+        print("  \(ok ? "ok  " : "FAIL") \(what)")
+    }
+    var old = try! JSONSerialization.jsonObject(with: JSONEncoder().encode(RecordingMode.lecture)) as! [String: Any]
+    old["language"] = nil; old["vad"] = nil; old["input"] = nil
+    old["name"] = "Saved by 1.2"
+    let data = try! JSONSerialization.data(withJSONObject: [old])
+    let decoded = try? JSONDecoder().decode([RecordingMode].self, from: data)
+    check("an older saved mode decodes", decoded?.count == 1)
+    check("its own fields survive", decoded?.first?.name == "Saved by 1.2"
+          && decoded?.first?.binding == RecordingMode.lecture.binding)
+    check("missing fields take the defaults", decoded?.first?.language == "auto"
+          && decoded?.first?.vad == true && decoded?.first?.input == .microphone)
+    let round = try? JSONDecoder().decode(RecordingMode.self,
+                                          from: JSONEncoder().encode(RecordingMode.onlineClass))
+    check("a current mode round-trips", round == RecordingMode.onlineClass)
+    print(failures == 0 ? "PASS" : "FAIL: \(failures) case(s)")
+    exit(failures == 0 ? 0 : 1)
+}
+
 let args = CommandLine.arguments
 switch args.dropFirst().first {
 case "--selftest-whisper":
-    guard args.count > 2 else { print("usage: yapperroni --selftest-whisper <file.wav>"); exit(2) }
-    selftestWhisper(args[2])
+    guard args.count > 2 else { print("usage: yapperroni --selftest-whisper <file.wav> [model] [--accurate]"); exit(2) }
+    // [model] [--accurate] [--vad] [--lang=xx]
+    let rest = Array(args.dropFirst(3))
+    var opts = DecodeOptions(accurate: rest.contains("--accurate"), vad: rest.contains("--vad"))
+    if let l = rest.first(where: { $0.hasPrefix("--lang=") }) { opts.language = String(l.dropFirst(7)) }
+    selftestWhisper(args[2], model: rest.first { !$0.hasPrefix("-") }, options: opts)
+case "--selftest-chunk":
+    selftestChunk()
+case "--selftest-modes":
+    selftestModes()
 case "--selftest-audio":
     selftestAudio()
 case "--selftest-hotkey":
@@ -584,7 +689,7 @@ case "--selftest-streaming":
     selftestStreaming(args[2])
 case "--selftest-loopback":
     guard args.count > 2 else { print("usage: yapperroni --selftest-loopback <file.wav>"); exit(2) }
-    selftestLoopback(args[2])
+    selftestLoopback(args[2], system: args.contains("--system"))
 case "--log":
     print(Log.path)
     exit(0)

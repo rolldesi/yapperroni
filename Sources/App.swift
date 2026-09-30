@@ -7,7 +7,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let hotkey = Hotkey()
     private let recorder = Recorder()
     private let hud = HUD()
-    private var whisper: Whisper?
+    /// Every model the dictation key or an enabled mode points at, loaded up
+    /// front and keyed by model name. Loading turbo takes seconds, and a press
+    /// that answers "Loading model…" is a press that recorded nothing.
+    private var engines: [String: Transcriber] = [:]
+    /// Models being loaded right now, so a settings change mid-load does not
+    /// start a second 550 MB load of the same file.
+    private var loading = Set<String>()
+    /// The session in flight: its mode (nil for plain dictation) and the
+    /// engine resolved at press time, so a model change mid-recording cannot
+    /// pull the engine out from under the final pass.
+    private var activeMode: RecordingMode?
+    private var activeEngine: Transcriber?
 
     private let settings = Settings.shared
     private let history = HistoryStore.shared
@@ -99,6 +110,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             .sink { [weak self] _ in self?.loadModel() }
             .store(in: &bag)
 
+        settings.$modes
+            .dropFirst()
+            .map { $0.filter(\.enabled).map(\.modelFilename) }
+            .removeDuplicates()
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in self?.loadModel() }
+            .store(in: &bag)
+
         settings.reconcileModelSelection()
 
         if let arg = CommandLine.arguments.first(where: { $0.hasPrefix("--open-window") }) {
@@ -117,7 +136,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 + "push=\(settings.binding.displayName) "
                 + "lock=\(settings.lockEnabled ? settings.lockBinding.displayName : "off") "
                 + "mode=\(settings.activation.rawValue) "
-                + "model=\(settings.modelPath)")
+                + "model=\(settings.modelPath) "
+                + "modes=[\(settings.modes.map { "\($0.name):\($0.enabled ? $0.binding.displayName : "off"):\($0.modelFilename)" }.joined(separator: ", "))]")
         if !hotkey.isActive {
             Log.write("launch  TAP DEAD — grant Accessibility, then quit and reopen Yapperroni")
         }
@@ -149,14 +169,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         streamer?.cancel()
         streamer = nil
         recorder.stop()
-        whisper?.close()
-        whisper = nil
+        engines.values.forEach { $0.close() }
+        engines = [:]
     }
 
     // MARK: - Dictation
 
     private func beginDictation(_ source: Hotkey.Source = .hold) {
-        guard state.modelReady else {
+        var mode: RecordingMode?
+        if case .mode(let i) = source, settings.modes.indices.contains(i) { mode = settings.modes[i] }
+        guard let engine = engine(for: mode?.modelFilename ?? settings.modelFilename) else {
             flash("Loading model…", 1.5); hotkey.disengage(); return
         }
         guard !recorder.isRecording else { return }
@@ -181,7 +203,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         targetAppName = targetApp?.localizedName ?? "?"
 
         do {
-            try recorder.start()
+            try recorder.start(voiceIsolation: mode?.voiceIsolation ?? settings.voiceIsolation,
+                               input: mode?.input ?? .microphone)
         } catch {
             Log.write("press   recorder failed: \(error)")
             flash("\(error)", 3); hotkey.disengage(); return
@@ -194,17 +217,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         voicePeak = 0
         heardVoice = false
         quietestSecond = .infinity
-        handsFree = (source == .lock) || settings.activation == .toggle
-        Log.write("press   source=\(source == .lock ? "lock" : "hold") target=\(targetAppName)")
+        handsFree = source != .hold || settings.activation == .toggle
+        activeMode = mode
+        activeEngine = engine
+        let sourceName = mode.map { "mode \"\($0.name)\"" } ?? (source == .lock ? "lock" : "hold")
+        Log.write("press   source=\(sourceName) target=\(targetAppName)")
         if settings.soundFeedback { NSSound(named: "Tink")?.play() }
 
-        hud.show(source == .lock ? .locked : .listening, at: settings.hudPosition)
+        hud.show(source == .hold ? .listening : .locked, at: settings.hudPosition)
+        // Worth saying on the pill itself: the dictation model may be
+        // English-only, and a French lecture through it comes out as noise.
+        if let mode, engines[mode.modelFilename] == nil {
+            hud.setPartial(loading.contains(mode.modelFilename)
+                           ? "\(mode.name) model still loading — using the dictation model"
+                           : "\(mode.name) model missing — using the dictation model")
+        }
 
         // Live mode types words as they settle. It must own the whole
         // utterance: batch would paste the same text again at the end.
-        if settings.liveTranscription, !settings.cleanupEnabled, let w = whisper {
+        if mode?.live ?? settings.liveTranscription, !settings.cleanupEnabled {
             let s = StreamingTranscriber(
-                whisper: w,
+                whisper: engine,
+                options: decodeOptions(mode),
                 onEmit: { [weak self] chunk in
                     self?.typeQueue.async { Injector.typeOut(chunk) }
                 },
@@ -236,10 +270,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard recorder.isRecording else { return }
         let now = Date()
 
-        if now.timeIntervalSince(sessionStart) >= Config.maxSessionSeconds {
-            return autoStop("\(Int(Config.maxSessionSeconds / 60)) minute limit")
+        let ceiling = activeMode.map { $0.maxMinutes * 60 } ?? Config.maxSessionSeconds
+        if ceiling > 0, now.timeIntervalSince(sessionStart) >= ceiling {
+            return autoStop("\(Int(ceiling / 60)) minute limit")
         }
-        guard handsFree else { return }
+        guard handsFree, activeMode?.stopOnSilence ?? true else { return }
 
         // `recorder.level` is overwritten per audio buffer, so a 30 Hz sample
         // of it misses buffers. Accumulate the peak between checks instead.
@@ -282,7 +317,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         state.dictating = false
         let seconds = Double(pcm.count) / Config.sampleRate
         let target = targetApp
-        let appName = targetAppName
+        // A lecture's history row says "Lecture", not whichever app happened
+        // to be in front when it started.
+        let appName = activeMode?.name ?? targetAppName
+        let output = activeMode?.output ?? settings.output
+        let options = decodeOptions(activeMode)
+        let fromSystem = activeMode?.input == .system
+        let engine = activeEngine
+        activeMode = nil
+        activeEngine = nil
         if settings.soundFeedback { NSSound(named: "Pop")?.play() }
 
         let peak = Recorder.peakRMS(pcm)
@@ -302,6 +345,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
 
+        // A denied System Audio Recording grant is not an error: the tap runs
+        // and delivers exact zeros. Nothing real is that quiet.
+        if fromSystem, peak == 0 {
+            Log.write("        computer audio was digital silence — permission denied, or nothing playing")
+            flash("Computer audio was silent — allow System Audio Recording in Privacy & Security", 4)
+            return
+        }
+
         guard seconds >= settings.minSpeechSeconds, Double(peak) >= settings.minPeakRMS else {
             Log.write("        DROPPED by gate — adjust the silence gate in Settings")
             hud.show(.message(Double(peak) < settings.minPeakRMS
@@ -316,11 +367,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let t0 = Date()
 
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-            guard let self, let whisper = self.whisper else {
+            guard let self, let engine else {
                 DispatchQueue.main.async { self?.isTranscribing = false }
                 return
             }
-            let raw = whisper.transcribe(pcm)
+            let raw = engine.transcribe(pcm, options: options)
             let elapsed = Date().timeIntervalSince(t0)
 
             DispatchQueue.main.async {
@@ -340,7 +391,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
                 guard self.settings.cleanupEnabled else {
                     self.isTranscribing = false
-                    self.deliver(raw, target: target, seconds: seconds,
+                    self.deliver(raw, target: target, output: output, seconds: seconds,
                                  elapsed: elapsed, appName: appName)
                     return
                 }
@@ -370,7 +421,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     let final = text
                     await MainActor.run {
                         self.isTranscribing = false
-                        self.deliver(final, target: target, seconds: seconds,
+                        self.deliver(final, target: target, output: output, seconds: seconds,
                                      elapsed: elapsed, appName: appName)
                     }
                 }
@@ -419,17 +470,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     /// Types or pastes the finished text and records it.
-    private func deliver(_ raw: String, target: NSRunningApplication?,
+    private func deliver(_ raw: String, target: NSRunningApplication?, output: OutputMode,
                          seconds: Double, elapsed: Double, appName: String) {
         let text = settings.trailingSpace ? raw + " " : raw
-        Injector.inject(text, into: target, mode: settings.output,
+        Injector.inject(text, into: target, mode: output,
                         leaveOnClipboard: settings.copyToClipboard)
 
         history.add(Utterance(date: Date(), text: raw, duration: seconds,
                               latency: elapsed, appName: appName))
         wordCount += raw.split(separator: " ").count
 
-        let verb = settings.output == .copy ? "copied" : "inserted"
+        let verb = output == .copy ? "copied" : "inserted"
         hud.show(.message(String(format: "%.1fs · %d words %@",
                                  elapsed, raw.split(separator: " ").count, verb)),
                  at: settings.hudPosition)
@@ -455,37 +506,90 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                                 lockEnabled: settings.lockEnabled,
                                 vocab: settings.vocabBinding,
                                 vocabEnabled: settings.vocabEnabled,
-                                mode: settings.activation)
+                                mode: settings.activation,
+                                modes: settings.modes.map { $0.enabled ? $0.binding : nil })
         state.tapActive = live
         state.accessibilityGranted = Hotkey.requestAccessibility(prompt: false)
         setBadge(live ? nil : "!")
         Log.write("hotkey  push=\(settings.binding.displayName) "
                 + "lock=\(settings.lockEnabled ? settings.lockBinding.displayName : "off") "
                 + "vocab=\(settings.vocabEnabled ? settings.vocabBinding.displayName : "off") "
-                + "mode=\(settings.activation.rawValue) live=\(live)")
+                + "mode=\(settings.activation.rawValue) "
+                + "modes=\(settings.modes.filter(\.enabled).map { "\($0.name)=\($0.binding.displayName)" }) "
+                + "live=\(live)")
         refreshMenu()
     }
 
+    /// Dictation has no VAD: it is short, gated on loudness already, and live
+    /// mode re-runs it twice a second.
+    private func decodeOptions(_ mode: RecordingMode?) -> DecodeOptions {
+        guard let mode else { return DecodeOptions(language: settings.language) }
+        return DecodeOptions(accurate: mode.accurate, language: mode.language, vad: mode.vad)
+    }
+
+    /// A mode whose model is missing runs on the dictation model instead of
+    /// refusing to record — the words matter more than which model hears them.
+    private func engine(for name: String) -> Transcriber? {
+        if let e = engines[name] { return e }
+        if name != settings.modelFilename, let e = engines[settings.modelFilename] {
+            Log.write("model   \(name) not loaded; using \(settings.modelFilename)")
+            return e
+        }
+        return nil
+    }
+
+    private func neededModels() -> Set<String> {
+        let available = Set(settings.availableModels)
+        var names: Set<String> = [settings.modelFilename]
+        for m in settings.modes where m.enabled && available.contains(m.modelFilename) {
+            names.insert(m.modelFilename)
+        }
+        return names
+    }
+
+    /// Loads what is needed and not resident, closes what is resident and no
+    /// longer needed. Closing waits out any transcription still using the
+    /// model, so it happens off the main thread.
     private func loadModel() {
-        state.modelReady = false
-        let path = settings.modelPath
-        let previous = whisper
-        whisper = nil
+        let needed = neededModels()
+        // Never the engine a recording is using: closing it would make the
+        // final pass return nothing, and an hour of lecture with it.
+        // ponytail: a spared engine stays resident until the next reload.
+        let unneeded = engines.filter { !needed.contains($0.key) && $0.value !== activeEngine }
+        unneeded.keys.forEach { engines[$0] = nil }
+        let missing = needed.subtracting(engines.keys).subtracting(loading)
+            .map { ($0, settings.modelPath(for: $0)) }
+        missing.forEach { loading.insert($0.0) }
+        state.modelReady = engines[settings.modelFilename] != nil
+        refreshMenu()
+
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-            previous?.close()
-            let w = Whisper(modelPath: path)
-            DispatchQueue.main.async {
-                guard let self else { return }
-                self.whisper = w
-                self.state.modelReady = (w != nil)
-                if w == nil {
-                    self.setBadge("!")
-                    self.flash("Model failed to load", 5)
-                    Log.write("model   FAILED to load \(path)")
-                } else {
-                    Log.write("model   loaded \(path)")
+            unneeded.values.forEach { $0.close() }
+            for (name, path) in missing {
+                let t0 = Date()
+                let e = Engines.load(path: path)
+                let secs = Date().timeIntervalSince(t0)
+                DispatchQueue.main.async {
+                    guard let self else { e?.close(); return }
+                    self.loading.remove(name)
+                    guard let e else {
+                        if name == self.settings.modelFilename {
+                            self.setBadge("!")
+                            self.flash("Model failed to load", 5)
+                        }
+                        Log.write("model   FAILED to load \(path)")
+                        return
+                    }
+                    // Settings may have moved on while this loaded.
+                    guard self.neededModels().contains(name), self.engines[name] == nil else {
+                        DispatchQueue.global().async { e.close() }
+                        return
+                    }
+                    self.engines[name] = e
+                    Log.write(String(format: "model   loaded %@ in %.1fs", path, secs))
+                    self.state.modelReady = self.engines[self.settings.modelFilename] != nil
+                    self.refreshMenu()
                 }
-                self.refreshMenu()
             }
         }
     }
@@ -524,6 +628,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                          action: nil, keyEquivalent: "")
             if settings.lockEnabled {
                 menu.addItem(withTitle: "\(settings.lockBinding.displayName) to lock hands-free",
+                             action: nil, keyEquivalent: "")
+            }
+            for m in settings.modes where m.enabled {
+                menu.addItem(withTitle: "\(m.binding.displayName) to record \(m.name)",
                              action: nil, keyEquivalent: "")
             }
         }

@@ -27,6 +27,29 @@ enum OutputMode: String, Codable, CaseIterable, Identifiable {
     }
 }
 
+/// Where a recording mode listens.
+enum AudioInput: String, Codable, CaseIterable, Identifiable {
+    /// The microphone, through `AVAudioEngine`.
+    case microphone
+    /// Everything the Mac is playing — a Teams call, a lecture in a browser —
+    /// taken digitally before it reaches the speakers, so there is no room,
+    /// no echo and no volume knob between the lecturer and the model.
+    case system
+    var id: String { rawValue }
+    var label: String { self == .microphone ? "Microphone" : "Computer audio (calls, videos)" }
+}
+
+/// Spoken-language choices. Whisper knows 99; these are the ones worth a row.
+/// `auto` lets whisper detect it from the first 30 s of each recording.
+enum Languages {
+    static let all: [(code: String, name: String)] = [
+        ("auto", "Detect automatically"), ("en", "English"), ("fr", "French"),
+        ("de", "German"), ("es", "Spanish"), ("it", "Italian"), ("pt", "Portuguese"),
+        ("nl", "Dutch"), ("hi", "Hindi"), ("ar", "Arabic"), ("zh", "Chinese"),
+        ("ja", "Japanese"), ("ko", "Korean"), ("ru", "Russian"),
+    ]
+}
+
 enum AppTheme: String, Codable, CaseIterable, Identifiable {
     case system, light, dark
     var id: String { rawValue }
@@ -43,6 +66,109 @@ enum HUDPosition: String, Codable, CaseIterable, Identifiable {
     case bottom, top, center, hidden
     var id: String { rawValue }
     var label: String { rawValue.capitalized }
+}
+
+/// A second way to record, on its own shortcut: a lecture, a meeting, a long
+/// dictation into a smarter model. Dictation itself stays the push-to-talk key
+/// and the lock in Shortcuts, running on the global model and settings.
+///
+/// A mode is always hands-free — press to start, press to stop. Nobody holds a
+/// key down through an hour of lecture.
+struct RecordingMode: Codable, Equatable, Identifiable {
+    var id = UUID()
+    var name: String
+    var enabled = true
+    var binding: KeyBinding
+    /// A `.bin` for whisper.cpp or a sherpa-onnx folder name, like `modelFilename`.
+    var modelFilename: String
+    var voiceIsolation: Bool
+    var live: Bool
+    var output: OutputMode
+    /// Beam search instead of greedy. Whisper only; slower.
+    var accurate: Bool
+    /// Ceiling on one recording. 0 means none.
+    var maxMinutes: Double
+    /// End by itself after `Config.maxSilenceSeconds` of quiet. Off for a
+    /// lecture: a lecturer pausing at the board is not the end.
+    var stopOnSilence: Bool
+    /// A code from `Languages.all`. English-only models ignore it.
+    var language = "auto"
+    /// Silero voice-activity detection before whisper: silence is cut out
+    /// instead of decoded, which is where whisper invents its sentences.
+    var vad = true
+    var input = AudioInput.microphone
+
+    /// ⌥L. Greedy, not accurate: beam search made the long-lecture benchmark
+    /// worse (see `Whisper.transcribe`). Voice processing off because it is
+    /// tuned for a voice near the mic and treats a lecturer across the room as
+    /// noise to suppress. Live off because live mode re-transcribes the whole
+    /// buffer every tick, which grows without bound over an hour. Copy, not
+    /// paste: an hour of text at whatever caret happens to be frontmost is
+    /// never what anyone wants.
+    static let lecture = RecordingMode(
+        name: "Lecture",
+        binding: KeyBinding(keyCode: 37, deviceMask: 0,
+                            modifierFlags: CGEventFlags.maskAlternate.rawValue, kind: .combo),
+        modelFilename: Config.accurateModelFilename,
+        voiceIsolation: false, live: false, output: .copy,
+        accurate: false, maxMinutes: 180, stopOnSilence: false)
+
+    /// ⌥O. A class on Teams, Zoom or in a browser tab, recorded from the
+    /// computer's own audio rather than through the air to the mic.
+    static let onlineClass = RecordingMode(
+        name: "Online class",
+        binding: KeyBinding(keyCode: 31, deviceMask: 0,
+                            modifierFlags: CGEventFlags.maskAlternate.rawValue, kind: .combo),
+        modelFilename: Config.accurateModelFilename,
+        voiceIsolation: false, live: false, output: .copy,
+        accurate: false, maxMinutes: 180, stopOnSilence: false,
+        input: .system)
+
+    static let defaults: [RecordingMode] = [.lecture, .onlineClass]
+
+    /// What "Add mode" starts from: dictation defaults on the accurate model.
+    init(name: String, binding: KeyBinding, modelFilename: String,
+         voiceIsolation: Bool, live: Bool, output: OutputMode,
+         accurate: Bool, maxMinutes: Double, stopOnSilence: Bool,
+         language: String = "auto", vad: Bool = true, input: AudioInput = .microphone) {
+        self.name = name; self.binding = binding; self.modelFilename = modelFilename
+        self.voiceIsolation = voiceIsolation; self.live = live; self.output = output
+        self.accurate = accurate; self.maxMinutes = maxMinutes; self.stopOnSilence = stopOnSilence
+        self.language = language; self.vad = vad; self.input = input
+    }
+
+    // Decoded field by field so a mode saved by an older build, missing the
+    // newer fields, keeps its shortcut and model instead of failing the whole
+    // list back to the defaults.
+    private enum CodingKeys: String, CodingKey {
+        case id, name, enabled, binding, modelFilename, voiceIsolation, live, output,
+             accurate, maxMinutes, stopOnSilence, language, vad, input
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id             = try c.decode(UUID.self, forKey: .id)
+        name           = try c.decode(String.self, forKey: .name)
+        enabled        = try c.decode(Bool.self, forKey: .enabled)
+        binding        = try c.decode(KeyBinding.self, forKey: .binding)
+        modelFilename  = try c.decode(String.self, forKey: .modelFilename)
+        voiceIsolation = try c.decode(Bool.self, forKey: .voiceIsolation)
+        live           = try c.decode(Bool.self, forKey: .live)
+        output         = try c.decode(OutputMode.self, forKey: .output)
+        accurate       = try c.decode(Bool.self, forKey: .accurate)
+        maxMinutes     = try c.decode(Double.self, forKey: .maxMinutes)
+        stopOnSilence  = try c.decode(Bool.self, forKey: .stopOnSilence)
+        language       = try c.decodeIfPresent(String.self, forKey: .language) ?? "auto"
+        vad            = try c.decodeIfPresent(Bool.self, forKey: .vad) ?? true
+        input          = try c.decodeIfPresent(AudioInput.self, forKey: .input) ?? .microphone
+    }
+
+    static func blank(binding: KeyBinding) -> RecordingMode {
+        RecordingMode(name: "New mode", binding: binding,
+                      modelFilename: Config.accurateModelFilename,
+                      voiceIsolation: true, live: false, output: .paste,
+                      accurate: false, maxMinutes: 3, stopOnSilence: true)
+    }
 }
 
 /// UserDefaults-backed app settings.
@@ -161,6 +287,21 @@ final class Settings: ObservableObject {
     @Published var autoStopRMS: Double         { didSet { d.set(autoStopRMS, forKey: "autoStopRMS") } }
     @Published var minSpeechSeconds: Double    { didSet { d.set(minSpeechSeconds, forKey: "minSpeechSeconds") } }
     @Published var modelFilename: String       { didSet { d.set(modelFilename, forKey: "modelFilename") } }
+    /// Dictation's spoken language. English by default: the bundled model is
+    /// English-only, and auto-detect on a two-second utterance guesses wrong.
+    @Published var language: String           { didSet { d.set(language, forKey: "language") } }
+    @Published var modes: [RecordingMode] {
+        didSet {
+            guard modes != oldValue else { return }
+            if let data = try? JSONEncoder().encode(modes) { d.set(data, forKey: "modes") }
+            // Only a shortcut change rebuilds the tap. Rebuilding ends any
+            // recording in progress, so renaming a lecture mid-lecture must not.
+            func keys(_ m: [RecordingMode]) -> [String] {
+                m.map { "\($0.enabled) \($0.binding)" }
+            }
+            if keys(modes) != keys(oldValue) { hotkeyChanged.send() }
+        }
+    }
 
     /// A silent decode failure would reset the user's key with no trace, so
     /// say so in the log when the stored shape no longer parses.
@@ -199,6 +340,7 @@ final class Settings: ObservableObject {
             "autoStopRMS": Double(Config.defaultAutoStopRMS),
             "minSpeechSeconds": Config.defaultMinSpeechSeconds,
             "modelFilename": Config.defaultModelFilename,
+            "language": "en",
         ])
 
         binding     = Settings.decodeBinding(d.data(forKey: "binding"), "binding", .pushDefault)
@@ -227,25 +369,40 @@ final class Settings: ObservableObject {
         autoStopRMS      = d.double(forKey: "autoStopRMS")
         minSpeechSeconds = d.double(forKey: "minSpeechSeconds")
         modelFilename    = d.string(forKey: "modelFilename") ?? Config.defaultModelFilename
+        language         = d.string(forKey: "language") ?? "en"
+        modes            = Settings.decodeModes(d.data(forKey: "modes"))
+    }
+
+    private static func decodeModes(_ data: Data?) -> [RecordingMode] {
+        guard let data else { return RecordingMode.defaults }
+        do {
+            return try JSONDecoder().decode([RecordingMode].self, from: data)
+        } catch {
+            Log.write("settings modes failed to decode (\(error)); using the defaults")
+            return RecordingMode.defaults
+        }
     }
 
     /// A model the user dropped into the support folder wins over the one
     /// shipped inside the app, so a bundled default can still be overridden.
-    var modelPath: String {
+    var modelPath: String { modelPath(for: modelFilename) }
+
+    func modelPath(for name: String) -> String {
         let fm = FileManager.default
-        let support = Config.supportDir.appendingPathComponent(modelFilename).path
+        let support = Config.supportDir.appendingPathComponent(name).path
         if fm.fileExists(atPath: support) { return support }
-        if let bundled = Bundle.main.resourcePath.map({ $0 + "/" + modelFilename }),
+        if let bundled = Bundle.main.resourcePath.map({ $0 + "/" + name }),
            fm.fileExists(atPath: bundled) { return bundled }
         return support
     }
 
-    /// Models shipped in the bundle plus any the user added.
+    /// Models shipped in the bundle plus any the user added: whisper `.bin`
+    /// files and sherpa-onnx model folders.
     var availableModels: [String] {
         let fm = FileManager.default
         var names = Set<String>()
         for dir in [Config.supportDir.path, Bundle.main.resourcePath].compactMap({ $0 }) {
-            for f in (try? fm.contentsOfDirectory(atPath: dir)) ?? [] where f.hasSuffix(".bin") {
+            for f in (try? fm.contentsOfDirectory(atPath: dir)) ?? [] where Engines.isModel(f, in: dir) {
                 names.insert(f)
             }
         }
@@ -302,5 +459,7 @@ final class Settings: ObservableObject {
         autoStopRMS      = Double(Config.defaultAutoStopRMS)
         minSpeechSeconds = Config.defaultMinSpeechSeconds
         modelFilename    = Config.defaultModelFilename
+        language         = "en"
+        modes            = RecordingMode.defaults
     }
 }

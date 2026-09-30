@@ -12,8 +12,16 @@ section below spells out exactly what that means.
 ## What it records, and when
 
 Only while you are holding the dictation key, or between the two presses of the
-hands-free lock. Nothing is captured when you are not actively dictating —
-there is no wake word, no always-on listening, no background buffer.
+hands-free lock or a recording mode's shortcut. Nothing is captured when you
+are not actively recording — there is no wake word, no always-on listening, no
+background buffer.
+
+A recording mode set to **Computer audio** records what the Mac is playing — a
+Teams call, a lecture in a browser — instead of the microphone, straight from
+the output mix. macOS asks once for **System Audio Recording**. That audio is
+treated exactly like the microphone's: held in memory, turned into text on this
+Mac, discarded. It is captured only between the two presses of that mode's
+shortcut.
 
 The recording indicator (the orange dot in the menu bar, and Yapperroni's own
 on-screen pill) is on for exactly as long as the microphone is.
@@ -111,6 +119,12 @@ You can read all of it: `Sources/Hotkey.swift` is about 200 lines.
 
 Required, for the obvious reason. macOS shows the orange recording indicator
 whenever it is live.
+
+## System Audio Recording
+
+Only needed for a recording mode set to Computer audio, and only asked for the
+first time you use one. Revoke it in System Settings → Privacy & Security →
+Screen & System Audio Recording; the mode then records silence and says so.
 
 ## If you did not build it yourself
 

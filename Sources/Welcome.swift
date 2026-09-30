@@ -66,7 +66,7 @@ struct WelcomeView: View {
                     .fontWeight(.medium)
                 Text(cleanup
                      ? "Speech recognition runs on your own hardware and the audio is never uploaded. But AI cleanup is on, so each finished transcript is sent as text to \(settings.cleanupProvider.label) to be rewritten. Turn it off in Settings to keep everything local."
-                     : "Speech recognition runs entirely on your own hardware. No account, no server, no analytics. Audio is held in memory while you speak and discarded once it becomes text. Nothing is sent anywhere unless you turn on AI cleanup in Settings.")
+                     : "Speech recognition runs entirely on your own hardware. No account, no server, no analytics. Audio — from the mic, or from the computer in a Computer audio mode — is held in memory while it records and discarded once it becomes text. Nothing is sent anywhere unless you turn on AI cleanup in Settings.")
                     .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
         }
