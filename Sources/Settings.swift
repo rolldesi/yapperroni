@@ -101,6 +101,10 @@ struct RecordingMode: Codable, Equatable, Identifiable {
     /// turning on for recordings with long real silences.
     var vad = false
     var input = AudioInput.microphone
+    /// Which mic when `input` is the microphone; see `InputDevice.resolve`.
+    var micDevice = InputDevice.systemDefault
+    /// Raise the mic's input gain to full for the recording, then put it back.
+    var maxMicGain = false
 
     /// ⌥L. Greedy, not accurate: beam search made the long-lecture benchmark
     /// worse (see `Whisper.transcribe`). Voice processing off because it is
@@ -115,7 +119,8 @@ struct RecordingMode: Codable, Equatable, Identifiable {
                             modifierFlags: CGEventFlags.maskAlternate.rawValue, kind: .combo),
         modelFilename: Config.accurateModelFilename,
         voiceIsolation: false, live: false, output: .copy,
-        accurate: false, maxMinutes: 180, stopOnSilence: false)
+        accurate: false, maxMinutes: 180, stopOnSilence: false,
+        micDevice: InputDevice.builtInMic, maxMicGain: true)
 
     /// ⌥O. A class on Teams, Zoom or in a browser tab, recorded from the
     /// computer's own audio rather than through the air to the mic.
@@ -134,11 +139,13 @@ struct RecordingMode: Codable, Equatable, Identifiable {
     init(name: String, binding: KeyBinding, modelFilename: String,
          voiceIsolation: Bool, live: Bool, output: OutputMode,
          accurate: Bool, maxMinutes: Double, stopOnSilence: Bool,
-         language: String = "auto", vad: Bool = false, input: AudioInput = .microphone) {
+         language: String = "auto", vad: Bool = false, input: AudioInput = .microphone,
+         micDevice: String = InputDevice.systemDefault, maxMicGain: Bool = false) {
         self.name = name; self.binding = binding; self.modelFilename = modelFilename
         self.voiceIsolation = voiceIsolation; self.live = live; self.output = output
         self.accurate = accurate; self.maxMinutes = maxMinutes; self.stopOnSilence = stopOnSilence
         self.language = language; self.vad = vad; self.input = input
+        self.micDevice = micDevice; self.maxMicGain = maxMicGain
     }
 
     // Decoded field by field so a mode saved by an older build, missing the
@@ -146,7 +153,7 @@ struct RecordingMode: Codable, Equatable, Identifiable {
     // list back to the defaults.
     private enum CodingKeys: String, CodingKey {
         case id, name, enabled, binding, modelFilename, voiceIsolation, live, output,
-             accurate, maxMinutes, stopOnSilence, language, vad, input
+             accurate, maxMinutes, stopOnSilence, language, vad, input, micDevice, maxMicGain
     }
 
     init(from decoder: Decoder) throws {
@@ -165,6 +172,8 @@ struct RecordingMode: Codable, Equatable, Identifiable {
         language       = try c.decodeIfPresent(String.self, forKey: .language) ?? "auto"
         vad            = try c.decodeIfPresent(Bool.self, forKey: .vad) ?? false
         input          = try c.decodeIfPresent(AudioInput.self, forKey: .input) ?? .microphone
+        micDevice      = try c.decodeIfPresent(String.self, forKey: .micDevice) ?? InputDevice.systemDefault
+        maxMicGain     = try c.decodeIfPresent(Bool.self, forKey: .maxMicGain) ?? false
     }
 
     static func blank(binding: KeyBinding) -> RecordingMode {

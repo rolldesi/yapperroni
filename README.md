@@ -99,6 +99,12 @@ A mode is always press-to-start, press-to-stop. It ships with two:
 | Ends by itself | 3 min, or 3 s of silence hands-free | 180 min, never on silence | 180 min, never on silence |
 | When finished | paste at cursor | copy to clipboard, saved in History | copy to clipboard, saved in History |
 
+**Microphone** is chosen per mode. Lecture records from this Mac's built-in mic
+whatever the system default is, at full input gain for the recording (put back
+afterwards): AirPods and headsets aim their mics at the wearer and filter out
+everyone else, so a professor across the room is removed before any app hears
+it. An iPhone placed nearer the front works too — it shows up in the list.
+
 **Computer audio** is a Core Audio process tap: Teams, Zoom or a browser tab
 is recorded digitally, before it reaches the speakers — headphones on or off.
 macOS asks once for System Audio Recording.

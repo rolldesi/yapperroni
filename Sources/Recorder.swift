@@ -81,8 +81,16 @@ final class Recorder {
     /// Held for the whole session so a mid-recording rebuild re-arms the same way.
     private var wantVoiceProcessing = true
 
+    /// Which mic, as a mode's `micDevice` preference; resolved on every arm so
+    /// a dictation after a lecture goes back to the system default.
+    private var wantDevice = InputDevice.systemDefault
+    private var armedDevice = AudioObjectID(kAudioObjectUnknown)
+    /// Input gain to put back when the recording ends, if this session raised it.
+    private var restoreGain: (AudioObjectID, Float32)?
+
     func start(voiceIsolation: Bool, input: AudioInput = .microphone,
-               systemScope: SystemAudioTap.Scope = .everything) throws {
+               systemScope: SystemAudioTap.Scope = .everything,
+               micDevice: String = InputDevice.systemDefault, maxGain: Bool = false) throws {
         guard !isRecording else { return }
         if input == .system {
             try armSystem(systemScope)
@@ -90,10 +98,37 @@ final class Recorder {
             return
         }
         wantVoiceProcessing = voiceIsolation
+        wantDevice = micDevice
         releaseWork?.cancel()
         releaseWork = nil
+        // Gain first: changing it posts a device reconfiguration, and after
+        // the tap is live that rebuild costs the first ~0.2 s of the lecture.
+        if maxGain {
+            raiseGain(InputDevice.resolve(micDevice, in: InputDevice.all(),
+                                          default: InputDevice.defaultInput()))
+        }
         try arm(keepingAudio: false)
         isRecording = true
+    }
+
+    /// A far voice arrives near the floor of the mic's range; the system's
+    /// input slider is often left mid-way. Raised for the recording only.
+    private func raiseGain(_ id: AudioObjectID) {
+        guard let old = InputDevice.inputVolume(id) else {
+            Log.write("audio   \"\(InputDevice.name(of: id))\" has no adjustable gain")
+            return
+        }
+        if old < 1, InputDevice.setInputVolume(id, 1) {
+            restoreGain = (id, old)
+            Log.write(String(format: "audio   mic gain %.2f -> 1.00 for this recording", old))
+        }
+    }
+
+    private func restoreGainIfRaised() {
+        guard let (id, old) = restoreGain else { return }
+        restoreGain = nil
+        InputDevice.setInputVolume(id, old)
+        Log.write(String(format: "audio   mic gain restored to %.2f", old))
     }
 
     /// Voice processing does not apply: there is no room and no echo to
@@ -134,6 +169,26 @@ final class Recorder {
         let input = engine.inputNode
         engine.stop()
         input.removeTap(onBus: 0)
+
+        // Point the engine at the chosen mic before anything reads its format.
+        // Only when it differs: setting the device posts a configuration
+        // change, which re-arms, which would set it again.
+        let target = InputDevice.resolve(wantDevice, in: InputDevice.all(),
+                                         default: InputDevice.defaultInput())
+        if let unit = input.audioUnit, target != kAudioObjectUnknown {
+            var current = AudioObjectID(kAudioObjectUnknown)
+            var size = UInt32(MemoryLayout<AudioObjectID>.size)
+            AudioUnitGetProperty(unit, kAudioOutputUnitProperty_CurrentDevice,
+                                 kAudioUnitScope_Global, 0, &current, &size)
+            if current != target {
+                var t = target
+                let s = AudioUnitSetProperty(unit, kAudioOutputUnitProperty_CurrentDevice,
+                                             kAudioUnitScope_Global, 0, &t,
+                                             UInt32(MemoryLayout<AudioObjectID>.size))
+                if s != noErr { Log.write("audio   could not switch to \"\(InputDevice.name(of: target))\" (\(s))") }
+            }
+            armedDevice = target
+        }
 
         // Apple's voice-processing unit: echo cancellation, noise suppression
         // and gain control, the same path FaceTime uses. This is what lets
@@ -178,14 +233,8 @@ final class Recorder {
         // Every "it works everywhere except in that one app" report comes down
         // to one of these three changing without anyone asking.
         Log.write(String(format: "audio   input \"%@\" %gHz x%u vp=%@",
-                         Recorder.inputDeviceName(), tapF.sampleRate,
+                         InputDevice.name(of: armedDevice), tapF.sampleRate,
                          tapF.channelCount, input.isVoiceProcessingEnabled ? "on" : "off"))
-    }
-
-    /// The device the engine is actually reading, by name — a Bluetooth headset
-    /// that another app switched to sounds identical to a dead tap in a log.
-    static func inputDeviceName() -> String {
-        AVCaptureDevice.default(for: .audio)?.localizedName ?? "unknown"
     }
 
     /// The input device was reconfigured under us. While recording that means
@@ -229,6 +278,7 @@ final class Recorder {
         } else {
             engine.inputNode.removeTap(onBus: 0)
             engine.stop()
+            restoreGainIfRaised()
             scheduleVoiceProcessingRelease()
         }
 

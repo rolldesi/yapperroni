@@ -204,7 +204,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         do {
             try recorder.start(voiceIsolation: mode?.voiceIsolation ?? settings.voiceIsolation,
-                               input: mode?.input ?? .microphone)
+                               input: mode?.input ?? .microphone,
+                               micDevice: mode?.micDevice ?? InputDevice.systemDefault,
+                               maxGain: mode?.maxMicGain ?? false)
         } catch {
             Log.write("press   recorder failed: \(error)")
             flash("\(error)", 3); hotkey.disengage(); return

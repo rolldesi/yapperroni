@@ -57,7 +57,11 @@ func selftestWhisper(_ wav: String, model: String? = nil,
     exit(0)
 }
 
-func selftestAudio() -> Never {
+/// `mic`: a mode's micDevice preference ("", "builtin", or a UID); `maxGain`
+/// raises the input gain for the 3 s and must put it back afterwards. Levels
+/// only — nothing is transcribed, so a room full of people is not written down.
+func selftestAudio(mic: String = InputDevice.systemDefault, maxGain: Bool = false) -> Never {
+    func say(_ m: String) { print(m); Log.write("selftest \(m)") }
     // Distinguishes "mic denied" from "mic authorized but silent". Launched
     // from a terminal, the grant belongs to the terminal, not to Yapperroni.
     let auth = AVCaptureDevice.authorizationStatus(for: .audio)
@@ -71,16 +75,26 @@ func selftestAudio() -> Never {
     }
     print("mic authorization: \(authName)")
 
+    let gainBefore = InputDevice.inputVolume(InputDevice.resolve(mic, in: InputDevice.all(),
+                                                                  default: InputDevice.defaultInput()))
     let r = Recorder()
-    do { try r.start(voiceIsolation: Settings.shared.voiceIsolation) } catch {
+    do { try r.start(voiceIsolation: mic.isEmpty ? Settings.shared.voiceIsolation : false,
+                     micDevice: mic, maxGain: maxGain) } catch {
         print("FAIL: \(error)"); exit(1)
     }
-    print("recording 3s — say something…")
+    say("recording 3s from \(mic.isEmpty ? "the default mic" : mic)…")
     RunLoop.current.run(until: Date().addingTimeInterval(3))
     let pcm = r.stop()
     let secs = Double(pcm.count) / Config.sampleRate
     let rms = Recorder.rms(pcm)
-    print(String(format: "captured %d samples (%.2fs) at 16 kHz, rms %.4f", pcm.count, secs, rms))
+    say(String(format: "captured %d samples (%.2fs) at 16 kHz, rms %.4f, peak100ms %.4f",
+               pcm.count, secs, rms, Recorder.peakRMS(pcm)))
+    let gainAfter = InputDevice.inputVolume(InputDevice.resolve(mic, in: InputDevice.all(),
+                                                                 default: InputDevice.defaultInput()))
+    if maxGain, gainBefore != gainAfter {
+        say("FAIL: mic gain not restored (\(gainBefore.map { "\($0)" } ?? "-") -> \(gainAfter.map { "\($0)" } ?? "-"))")
+        exit(1)
+    }
     guard secs > 1.8 else { print("FAIL: short capture — resample path is wrong"); exit(1) }
     guard Double(Recorder.peakRMS(pcm)) > Settings.shared.minPeakRMS else {
         print(auth == .authorized
@@ -88,7 +102,7 @@ func selftestAudio() -> Never {
             : "FAIL: silent because microphone access is \(authName) for this process")
         exit(1)
     }
-    print("PASS")
+    say("PASS")
     exit(0)
 }
 
@@ -726,6 +740,7 @@ func selftestModes() -> Never {
     }
     var old = try! JSONSerialization.jsonObject(with: JSONEncoder().encode(RecordingMode.lecture)) as! [String: Any]
     old["language"] = nil; old["vad"] = nil; old["input"] = nil
+    old["micDevice"] = nil; old["maxMicGain"] = nil
     old["name"] = "Saved by 1.2"
     let data = try! JSONSerialization.data(withJSONObject: [old])
     let decoded = try? JSONDecoder().decode([RecordingMode].self, from: data)
@@ -734,6 +749,22 @@ func selftestModes() -> Never {
           && decoded?.first?.binding == RecordingMode.lecture.binding)
     check("missing fields take the defaults", decoded?.first?.language == "auto"
           && decoded?.first?.vad == false && decoded?.first?.input == .microphone)
+    check("mic fields default for an older mode", decoded?.first?.micDevice == InputDevice.systemDefault
+          && decoded?.first?.maxMicGain == false)
+
+    print("which mic a mode records from:")
+    let mics = [InputDevice(id: 10, uid: "airpods-uid", name: "AirPods", builtIn: false),
+                InputDevice(id: 20, uid: "builtin-uid", name: "MacBook Air Microphone", builtIn: true),
+                InputDevice(id: 30, uid: "iphone-uid", name: "iPhone Microphone", builtIn: false)]
+    check("default follows the system", InputDevice.resolve("", in: mics, default: 10) == 10)
+    check("built-in finds the Mac's own mic", InputDevice.resolve("builtin", in: mics, default: 10) == 20)
+    check("a chosen device by UID", InputDevice.resolve("iphone-uid", in: mics, default: 10) == 30)
+    check("a missing device falls back to default", InputDevice.resolve("usb-gone", in: mics, default: 10) == 10)
+    check("no built-in mic falls back to default",
+          InputDevice.resolve("builtin", in: [mics[0]], default: 10) == 10)
+    check("lecture preset records from the built-in mic at full gain",
+          RecordingMode.lecture.micDevice == InputDevice.builtInMic && RecordingMode.lecture.maxMicGain)
+
     let round = try? JSONDecoder().decode(RecordingMode.self,
                                           from: JSONEncoder().encode(RecordingMode.onlineClass))
     check("a current mode round-trips", round == RecordingMode.onlineClass)
@@ -765,7 +796,9 @@ case "--selftest-capture":
                         .split(separator: ",").map(String.init),
                     options: opts, out: value("--out="))
 case "--selftest-audio":
-    selftestAudio()
+    // [--mic=builtin|<uid>] [--max-gain]
+    let mic = args.first { $0.hasPrefix("--mic=") }.map { String($0.dropFirst(6)) } ?? InputDevice.systemDefault
+    selftestAudio(mic: mic, maxGain: args.contains("--max-gain"))
 case "--selftest-hotkey":
     selftestHotkey()
 case "--selftest-toggle":

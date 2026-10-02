@@ -823,6 +823,15 @@ struct ModeEditor: View {
                 if mode.input == .system {
                     Text("Records what this Mac plays, before it reaches the speakers — the call or video itself, not the room. macOS asks once to allow System Audio Recording.")
                         .font(.caption).foregroundStyle(Palette.muted)
+                } else {
+                    Picker("Microphone", selection: $mode.micDevice) {
+                        Text("System default").tag(InputDevice.systemDefault)
+                        Text("This Mac's built-in mic").tag(InputDevice.builtInMic)
+                        ForEach(InputDevice.all(), id: \.uid) { Text($0.name).tag($0.uid) }
+                    }
+                    Text("AirPods and headsets aim at your mouth and filter out everyone else — a lecturer across the room is removed before Yapperroni hears it. Use the built-in mic, or an iPhone placed nearer the front.")
+                        .font(.caption).foregroundStyle(Palette.muted)
+                    Toggle("Max mic sensitivity while recording", isOn: $mode.maxMicGain)
                 }
                 Picker("Model", selection: $mode.modelFilename) {
                     ForEach(models, id: \.self) { Text(Engines.label($0)).tag($0) }

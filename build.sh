@@ -178,6 +178,7 @@ swiftc \
   "$ROOT/Sources/Whisper.swift" \
   "$ROOT/Sources/Streaming.swift" \
   "$ROOT/Sources/SystemAudio.swift" \
+  "$ROOT/Sources/InputDevices.swift" \
   "$ROOT/Sources/Recorder.swift" \
   "$ROOT/Sources/Hotkey.swift" \
   "$ROOT/Sources/Injector.swift" \
