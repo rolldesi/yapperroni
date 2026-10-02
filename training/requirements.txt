@@ -1,0 +1,15 @@
+# Training, on Kaggle / Colab / this Mac. Pinned to the set the smoke test ran
+# on: the two platforms ship different preinstalled versions, and an unpinned
+# install is the first thing to break when a run moves between them. torch is
+# deliberately not pinned — both platforms' CUDA builds are newer than 2.4 and
+# reinstalling it costs minutes per session.
+torch>=2.4
+transformers==5.18.0
+peft==0.21.2
+datasets==5.0.1
+huggingface_hub==1.33.0
+safetensors==0.8.0
+soundfile==0.14.0
+scipy==1.18.1
+pyarrow==25.0.1
+wandb==0.30.0

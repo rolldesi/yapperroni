@@ -14,3 +14,12 @@ dist/
 *.dmg
 
 .DS_Store
+
+# training: local env, caches, checkpoints, exported models
+training/.venv/
+training/.cache/
+training/runs/
+training/out/
+training/.venv-export/
+training/smoke/fixtures/
+__pycache__/

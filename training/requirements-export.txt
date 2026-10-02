@@ -1,0 +1,11 @@
+# Mac-only: merge, convert to whisper.cpp, build the CoreML encoder.
+# torch is pinned to the newest version coremltools is tested with; newer
+# ones warn and may fail inside the encoder conversion.
+torch==2.7.0
+transformers
+peft
+safetensors
+huggingface_hub
+openai-whisper
+coremltools
+ane_transformers
