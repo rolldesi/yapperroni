@@ -106,6 +106,34 @@ func selftestAudio(mic: String = InputDevice.systemDefault, maxGain: Bool = fals
     exit(0)
 }
 
+/// The sequence that broke the engine: dictation (default mic, voice
+/// processing on), a lecture straight after (built-in mic, off, full gain),
+/// then dictation again — on one recorder, as the app does. Each must capture.
+/// Levels only. Launch with `open` so the mic grant is the app's.
+func selftestMicSequence() -> Never {
+    func say(_ m: String) { print(m); Log.write("selftest \(m)") }
+    let r = Recorder()
+    var fails = 0
+    for (what, vp, mic, gain) in [("dictation", true, InputDevice.systemDefault, false),
+                                  ("lecture", false, InputDevice.builtInMic, true),
+                                  ("dictation again", true, InputDevice.systemDefault, false),
+                                  ("lecture again", false, InputDevice.builtInMic, true)] {
+        do {
+            try r.start(voiceIsolation: vp, micDevice: mic, maxGain: gain)
+        } catch {
+            fails += 1; say("FAIL \(what): \(error)"); continue
+        }
+        RunLoop.current.run(until: Date().addingTimeInterval(1.5))
+        let pcm = r.stop()
+        let ok = pcm.count > Int(Config.sampleRate)
+        fails += ok ? 0 : 1
+        say(String(format: "%@ %@: %.2fs captured, peak100ms %.4f", ok ? "ok  " : "FAIL", what,
+                   Double(pcm.count) / Config.sampleRate, Recorder.peakRMS(pcm)))
+    }
+    say(fails == 0 ? "PASS" : "FAIL: \(fails)")
+    exit(fails == 0 ? 0 : 1)
+}
+
 /// Verifies the Right-Option bit mask without needing Accessibility.
 /// `rightAltMask` is the one arithmetic constant that fails silently: the tap
 /// fires, the bit test never matches, and onPress simply never runs.
@@ -799,6 +827,8 @@ case "--selftest-audio":
     // [--mic=builtin|<uid>] [--max-gain]
     let mic = args.first { $0.hasPrefix("--mic=") }.map { String($0.dropFirst(6)) } ?? InputDevice.systemDefault
     selftestAudio(mic: mic, maxGain: args.contains("--max-gain"))
+case "--selftest-mic-sequence":
+    selftestMicSequence()
 case "--selftest-hotkey":
     selftestHotkey()
 case "--selftest-toggle":

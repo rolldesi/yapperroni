@@ -12,7 +12,10 @@ import AVFoundation
 ///      success and writes zeros. So we take channel 0 ourselves and leave the
 ///      converter with nothing to do but resample.
 final class Recorder {
-    private let engine = AVAudioEngine()
+    /// Replaced, not just restarted, when it fails: once an AVAudioEngine has
+    /// thrown -10875 (failed initialisation) it fails every later start too,
+    /// and the app could not record again until relaunched.
+    private var engine = AVAudioEngine()
     private var converter: AVAudioConverter?
     private var monoFormat: AVAudioFormat?
     private var samples: [Float] = []
@@ -53,11 +56,66 @@ final class Recorder {
         // stays installed but delivers nothing, so dictation records perfect
         // silence and reports "no speech detected". Rebuilding the tap on the
         // new format is the only fix.
+        observeEngine()
+    }
+
+    private func observeEngine() {
+        if let o = configObserver { NotificationCenter.default.removeObserver(o) }
         configObserver = NotificationCenter.default.addObserver(
             forName: .AVAudioEngineConfigurationChange,
             object: engine, queue: .main) { [weak self] _ in
                 self?.reconfigure()
             }
+    }
+
+    private func rebuildEngine(after error: Error) {
+        replaceEngine("the old one failed (\(error))")
+    }
+
+    /// A device this recording already failed to switch to; not retried.
+    private var pinFailedFor = AudioObjectID(kAudioObjectUnknown)
+
+    private func replaceEngine(_ why: String) {
+        Log.write("audio   new engine: \(why)")
+        engine.stop()
+        engine = AVAudioEngine()
+        deviceOverridden = false
+        observeEngine()
+    }
+
+    /// Points the input at `id` if it is not there already. Setting it posts a
+    /// configuration change; the re-arm that follows finds it in place and
+    /// does nothing, so this settles in one round.
+    private func engageDevice(_ id: AudioObjectID) -> Bool {
+        let input = engine.inputNode
+        if input.isVoiceProcessingEnabled {
+            do { try input.setVoiceProcessingEnabled(false) }
+            catch { Log.write("audio   could not release voice processing: \(error.localizedDescription)") }
+        }
+        guard let unit = input.audioUnit else { return false }
+        var current = AudioObjectID(kAudioObjectUnknown)
+        var size = UInt32(MemoryLayout<AudioObjectID>.size)
+        AudioUnitGetProperty(unit, kAudioOutputUnitProperty_CurrentDevice, kAudioUnitScope_Global, 0, &current, &size)
+        if current == id { deviceOverridden = true; return true }
+        var t = id
+        let s = AudioUnitSetProperty(unit, kAudioOutputUnitProperty_CurrentDevice, kAudioUnitScope_Global, 0,
+                                     &t, UInt32(MemoryLayout<AudioObjectID>.size))
+        if s != noErr {
+            Log.write("audio   could not switch to \"\(InputDevice.name(of: id))\" (\(s))")
+            return false
+        }
+        deviceOverridden = true
+        return true
+    }
+
+    /// One retry on a fresh engine, then the error stands.
+    private func armWithRecovery(keepingAudio: Bool) throws {
+        do {
+            try arm(keepingAudio: keepingAudio)
+        } catch {
+            rebuildEngine(after: error)
+            try arm(keepingAudio: keepingAudio)
+        }
     }
 
     deinit {
@@ -85,6 +143,9 @@ final class Recorder {
     /// a dictation after a lecture goes back to the system default.
     private var wantDevice = InputDevice.systemDefault
     private var armedDevice = AudioObjectID(kAudioObjectUnknown)
+    /// True while the engine is pinned to a device other than the system
+    /// default, so the next default-device session knows to switch back.
+    private var deviceOverridden = false
     /// Input gain to put back when the recording ends, if this session raised it.
     private var restoreGain: (AudioObjectID, Float32)?
 
@@ -99,6 +160,7 @@ final class Recorder {
         }
         wantVoiceProcessing = voiceIsolation
         wantDevice = micDevice
+        pinFailedFor = AudioObjectID(kAudioObjectUnknown)
         releaseWork?.cancel()
         releaseWork = nil
         // Gain first: changing it posts a device reconfiguration, and after
@@ -107,7 +169,7 @@ final class Recorder {
             raiseGain(InputDevice.resolve(micDevice, in: InputDevice.all(),
                                           default: InputDevice.defaultInput()))
         }
-        try arm(keepingAudio: false)
+        try armWithRecovery(keepingAudio: false)
         isRecording = true
     }
 
@@ -166,29 +228,43 @@ final class Recorder {
     /// when rebuilding mid-recording after the device changed underneath us —
     /// there the samples already captured must survive.
     private func arm(keepingAudio: Bool) throws {
+        // Which mic, decided before the engine is touched.
+        //
+        // A device is only ever set when the mode wants something other than
+        // the system default. Comparing against the input unit's own idea of
+        // its current device is not enough: once voice processing has run,
+        // the unit reports an internal device of its own, every comparison
+        // differs, the set fails (-10851), the failure posts a configuration
+        // change, and the re-arm sets it again — twenty times a second, with
+        // nothing recorded. Going back to the default after a lecture is a
+        // fresh engine, which follows the default on its own.
+        let fallback = InputDevice.defaultInput()
+        let target = InputDevice.resolve(wantDevice, in: InputDevice.all(), default: fallback)
+        let pin = target != fallback && target != kAudioObjectUnknown && pinFailedFor != target
+        if !pin, deviceOverridden {
+            replaceEngine("back to the system default mic")
+        } else if !wantVoiceProcessing, engine.inputNode.isVoiceProcessingEnabled {
+            // Turning it off on a live unit changes the format and posts two
+            // configuration changes, each re-arm costing the start of the
+            // lecture (0.85 s of 1.5 s captured). A fresh engine starts off.
+            replaceEngine("voice processing off")
+        }
+        armedDevice = pin ? target : fallback
+        if pin, !engageDevice(target) {
+            // A voice-processing unit can refuse the switch where a fresh one
+            // does not. One try on a fresh engine, then record from the
+            // default for the rest of this recording rather than loop.
+            replaceEngine("retrying the mic switch on a fresh engine")
+            if !engageDevice(target) {
+                pinFailedFor = target
+                armedDevice = fallback
+                replaceEngine("mic switch refused; recording from the default")
+            }
+        }
+
         let input = engine.inputNode
         engine.stop()
         input.removeTap(onBus: 0)
-
-        // Point the engine at the chosen mic before anything reads its format.
-        // Only when it differs: setting the device posts a configuration
-        // change, which re-arms, which would set it again.
-        let target = InputDevice.resolve(wantDevice, in: InputDevice.all(),
-                                         default: InputDevice.defaultInput())
-        if let unit = input.audioUnit, target != kAudioObjectUnknown {
-            var current = AudioObjectID(kAudioObjectUnknown)
-            var size = UInt32(MemoryLayout<AudioObjectID>.size)
-            AudioUnitGetProperty(unit, kAudioOutputUnitProperty_CurrentDevice,
-                                 kAudioUnitScope_Global, 0, &current, &size)
-            if current != target {
-                var t = target
-                let s = AudioUnitSetProperty(unit, kAudioOutputUnitProperty_CurrentDevice,
-                                             kAudioUnitScope_Global, 0, &t,
-                                             UInt32(MemoryLayout<AudioObjectID>.size))
-                if s != noErr { Log.write("audio   could not switch to \"\(InputDevice.name(of: target))\" (\(s))") }
-            }
-            armedDevice = target
-        }
 
         // Apple's voice-processing unit: echo cancellation, noise suppression
         // and gain control, the same path FaceTime uses. This is what lets
@@ -250,7 +326,7 @@ final class Recorder {
         }
         Log.write("audio   input device reconfigured mid-recording — rebuilding the tap")
         do {
-            try arm(keepingAudio: true)
+            try armWithRecovery(keepingAudio: true)
         } catch {
             // ponytail: leaves the recording running on a dead tap rather than
             // ending the utterance from underneath the user. The release gate
