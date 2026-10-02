@@ -37,7 +37,7 @@ Face repo, so a run started on one platform continues on the other.
 
 **Order of work** — each step stops by itself before the session limit and
 continues where it left off when you run it again, on either platform:
-1. `prepare.py` — one pass of base turbo to repair transcript style (AMI is ALL CAPS, VoxPopuli has no punctuation).
+1. `prepare.py` — one pass of base turbo over AMI to repair its style (ALL CAPS, no punctuation).
 2. `train.py` — LoRA training. Step 0 scores unmodified turbo: that is the number to beat.
 
 **Memory on a free T4 (16 GB)** — starting points, not measurements: turbo in fp16 ≈ 1.6 GB,

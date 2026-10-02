@@ -6,7 +6,7 @@ turbo's casing and punctuation (see text.restore_style). Progress is saved
 to the store every `--flush` rows with the stream position, so the pass can
 stop on one platform and continue on another without redoing work.
 
-    python prepare.py --store hf:you/yapperroni-train --sources ami_ihm,vox_en,vox_fr
+    python prepare.py --store hf:you/yapperroni-train
 """
 import argparse
 import json
@@ -26,12 +26,11 @@ from store import Store
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--store", required=True)
-    ap.add_argument("--sources", default="ami_ihm,vox_en,vox_fr")
+    ap.add_argument("--sources", default="ami_ihm", help="sources whose text needs restoring")
     ap.add_argument("--model", default=M.BASE)
     ap.add_argument("--batch", type=int, default=16)
     ap.add_argument("--flush", type=int, default=2000, help="rows per saved part")
-    ap.add_argument("--max-rows", default="vox_en=72000,vox_fr=18000",
-                    help="per-source caps, e.g. vox_en=72000 (~200 h)")
+    ap.add_argument("--max-rows", default="", help="per-source caps, e.g. ami_ihm=50000")
     ap.add_argument("--max-hours", type=float, default=11.5)
     ap.add_argument("--device", default="auto")
     ap.add_argument("--local", default="", help="source=file.parquet,... (smoke test)")

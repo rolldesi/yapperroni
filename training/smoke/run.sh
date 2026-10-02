@@ -19,7 +19,7 @@ rm -rf "$S"
 quiet() { grep -v -i "warn\|loading weights\|shuffle buffer" || true; }
 
 echo "== prepare"
-$PY prepare.py --store $S --model openai/whisper-tiny --local "$L" --flush 40 --batch 8 --max-rows vox_fr=50 2>&1 | quiet | tail -3
+$PY prepare.py --store $S --model openai/whisper-tiny --local "$L" --flush 40 --batch 8 2>&1 | quiet | tail -3
 
 echo "== train, then kill -9 after the first timed save"
 ARGS=(--store $S --model openai/whisper-tiny --local "$L" --batch 4 --accum 1 --max-steps 60

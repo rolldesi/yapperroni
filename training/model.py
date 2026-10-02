@@ -5,8 +5,8 @@ from transformers import WhisperForConditionalGeneration, WhisperProcessor
 
 BASE = "openai/whisper-large-v3-turbo"
 # Attention and MLP in both halves. The encoder is where accents and rooms
-# live; leaving it frozen (--decoder-only) is cheaper and keeps the CoreML
-# encoder valid, but only adapts vocabulary and style.
+# live; leaving it frozen (--decoder-only) is cheaper but only adapts
+# vocabulary and style.
 LORA_TARGETS = ["q_proj", "k_proj", "v_proj", "out_proj", "fc1", "fc2"]
 
 

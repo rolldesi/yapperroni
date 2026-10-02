@@ -40,7 +40,8 @@ write("ami_ihm", ami)
 write("ami_sdm", {**ami, "audio_id": [a.replace("_H0", "_SDM") for a in ami["audio_id"]],
                   "microphone_id": ["SDM1"] * len(rows)})
 vox = {"audio_id": [f"vox{i}" for i in range(len(rows))], "audio": audio,
-       "raw_text": [t.capitalize() for t in ami["text"]]}
+       # Punctuated like the real VoxPopuli training text, which trains as-is.
+       "raw_text": [t.capitalize() + "." for t in ami["text"]]}
 write("vox_en", vox)
 write("vox_fr", vox)
 write("vox_french_accent", {**vox, "accent": ["en_fr" if i % 2 else "en_de" for i in range(len(rows))]})

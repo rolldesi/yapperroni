@@ -39,10 +39,14 @@ AMI_KEY = ("meeting_id", "speaker_id", "begin_time", "end_time")
 TRAIN = {
     "ami_ihm": Source("edinburghcstr/ami", "ihm", "train", "text", "en", AMI_KEY),
     "ami_sdm": Source("edinburghcstr/ami", "sdm", "train", "text", "en", AMI_KEY),
-    "vox_en": Source("facebook/voxpopuli", "en", "train", "raw_text", "en"),
+    # VoxPopuli's training text is already cased and punctuated (98% of
+    # English rows, 88% of French — the rest start mid-sentence); only its
+    # accented test split is not. So it trains on its own text, and the
+    # teacher pass is AMI's alone.
+    "vox_en": Source("facebook/voxpopuli", "en", "train", "raw_text", "en", restore=False),
     # A little French so an English-only mix does not wear away the language
     # detection that made turbo usable on French lectures.
-    "vox_fr": Source("facebook/voxpopuli", "fr", "train", "raw_text", "fr"),
+    "vox_fr": Source("facebook/voxpopuli", "fr", "train", "raw_text", "fr", restore=False),
 }
 # Which source's restored targets a source trains on.
 TARGETS_FROM = {"ami_sdm": "ami_ihm"}
