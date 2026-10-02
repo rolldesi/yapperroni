@@ -49,6 +49,7 @@ struct ContentView: View {
                 Group {
                     switch state.section {
                     case .history:  HistoryView()
+                    case .modes:    ModesView()
                     case .settings: SettingsView()
                     }
                 }
@@ -302,85 +303,15 @@ struct SettingsView: View {
                     .foregroundStyle(Palette.ink)
                     .padding(.top, 4)
 
-                group("Shortcuts") {
-                    KeyRecorderField(title: "Hold to dictate",
-                                     binding: $settings.binding,
-                                     conflictsWith: [settings.lockEnabled ? settings.lockBinding : nil,
-                                                     settings.vocabEnabled ? settings.vocabBinding : nil]
-                                        .compactMap { $0 } + modeBindings(),
-                                     allowBareModifier: true)
-                    Picker("Mode", selection: $settings.activation) {
-                        ForEach(ActivationMode.allCases) { Text($0.label).tag($0) }
-                    }
-                    hint("A modifier held on its own, or a function key. A plain letter cannot be used — it would type into whatever app you are dictating into.")
-
-                    Divider().padding(.vertical, 4)
-
-                    Toggle("Enable hands-free lock", isOn: $settings.lockEnabled)
-                    KeyRecorderField(title: "Lock combo",
-                                     binding: $settings.lockBinding,
-                                     conflictsWith: [settings.binding]
-                                        + (settings.vocabEnabled ? [settings.vocabBinding] : [])
-                                        + modeBindings(),
-                                     allowBareModifier: false)
-                        .disabled(!settings.lockEnabled)
-                    hint("Press once to start recording hands-free, press again to stop. It must include a modifier, because Yapperroni swallows this combination so it does not also type.")
-
-                    Divider()
-
-                    Toggle("Enable quick-add to vocabulary", isOn: $settings.vocabEnabled)
-                    KeyRecorderField(title: "Add a word",
-                                     binding: $settings.vocabBinding,
-                                     conflictsWith: [settings.binding]
-                                        + (settings.lockEnabled ? [settings.lockBinding] : [])
-                                        + modeBindings(),
-                                     allowBareModifier: false)
-                        .disabled(!settings.vocabEnabled)
-                    hint("Opens a small window anywhere you are, so you can add a word the moment Yapperroni gets it wrong. Stays open until you press Escape, then hands focus back.")
-                }
-
-                group("Recording modes") {
-                    hint("Each mode has its own shortcut and model. Press once to start, again to stop. The dictation keys above run on the model under Model.")
-                    ForEach($settings.modes) { $mode in
-                        ModeEditor(mode: $mode,
-                                   conflicts: [settings.binding]
-                                    + (settings.lockEnabled ? [settings.lockBinding] : [])
-                                    + (settings.vocabEnabled ? [settings.vocabBinding] : [])
-                                    + modeBindings(excluding: mode.id),
-                                   models: settings.availableModels,
-                                   onDelete: { settings.modes.removeAll { $0.id == mode.id } })
-                        Divider()
-                    }
-                    Button("Add mode") { settings.modes.append(.blank(binding: freeModeBinding())) }
-                }
-
-                group("Output") {
-                    Toggle("Live transcription", isOn: $settings.liveTranscription)
-                    hint("Types each word as soon as it settles, instead of inserting everything when you stop. Words appear about a second behind you.")
-
-                    if settings.liveTranscription {
-                        hint("Live mode always types character by character, so the output mode below does not apply.")
-                    } else {
-                        Picker("When finished", selection: $settings.output) {
-                            ForEach(OutputMode.allCases) { Text($0.label).tag($0) }
-                        }
-                        hint(settings.output.detail)
-                    }
+                group("Text") {
                     Toggle("Add a trailing space", isOn: $settings.trailingSpace)
                     Toggle("Copy each transcript to the clipboard", isOn: $settings.copyToClipboard)
-                    hint("So you can paste it anywhere, even if no text field was focused.")
+                    hint("For every mode. So you can paste it anywhere, even if no text field was focused. Each mode's own output is under Modes.")
                 }
 
-                group("Model") {
-                    Picker("Model", selection: $settings.modelFilename) {
-                        ForEach(settings.availableModels, id: \.self) { Text(Engines.label($0)).tag($0) }
-                    }
-                    Picker("Language", selection: $settings.language) {
-                        ForEach(Languages.all, id: \.code) { Text($0.name).tag($0.code) }
-                    }
-                    hint(ModeEditor.modelNote(settings.modelFilename))
+                group("Models") {
                     HStack {
-                        hint("Drop whisper `.bin` files or sherpa-onnx model folders into the support folder to see them here.")
+                        hint("Each mode picks its model under Modes. Drop whisper `.bin` files or sherpa-onnx model folders into the support folder to add more.")
                         Spacer()
                         Button("Reveal") {
                             NSWorkspace.shared.selectFile(nil, inFileViewerRootedAtPath: Config.supportDir.path)
@@ -389,11 +320,6 @@ struct SettingsView: View {
                 }
 
                 group("Silence gate") {
-                    Toggle("Filter background noise", isOn: $settings.voiceIsolation)
-                    hint("Uses Apple's voice processing to hear you over music and room noise. Applies to your next dictation.")
-
-                    Divider().padding(.vertical, 4)
-
                     VStack(alignment: .leading, spacing: 6) {
                         HStack {
                             Text("Minimum loudness")
@@ -511,6 +437,15 @@ struct SettingsView: View {
                         .background(Palette.tint(0.035), in: RoundedRectangle(cornerRadius: 8))
                         .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(Palette.tint(0.06)))
                     hint("Names and jargon the model gets wrong — one per line, or comma separated. Whisper has no dictionary to update, so these are used to prime it.")
+
+                    Divider().padding(.vertical, 4)
+
+                    Toggle("Quick-add shortcut", isOn: $settings.vocabEnabled)
+                    KeyRecorderField(title: "Add a word", binding: $settings.vocabBinding,
+                                     conflictsWith: settings.shortcuts(except: .vocab),
+                                     allowBareModifier: false)
+                        .disabled(!settings.vocabEnabled)
+                    hint("Opens a small window anywhere you are, so you can add a word the moment Yapperroni gets it wrong. Stays open until you press Escape, then hands focus back.")
                 }
 
                 group("Appearance & feedback") {
@@ -563,20 +498,6 @@ struct SettingsView: View {
             .frame(maxWidth: .infinity)
         }
         .background(Palette.canvas)
-    }
-
-    private func modeBindings(excluding id: UUID? = nil) -> [KeyBinding] {
-        settings.modes.filter { $0.enabled && $0.id != id }.map(\.binding)
-    }
-
-    /// ⌥1…⌥9, first one nothing else is using. Only a starting point — the
-    /// recorder field is right there to change it.
-    private func freeModeBinding() -> KeyBinding {
-        let taken = Set(modeBindings() + [settings.binding, settings.lockBinding, settings.vocabBinding])
-        let digits: [Int64] = [18, 19, 20, 21, 23, 22, 26, 28, 25]
-        let opt = CGEventFlags.maskAlternate.rawValue
-        let candidates = digits.map { KeyBinding(keyCode: $0, deviceMask: 0, modifierFlags: opt, kind: .combo) }
-        return candidates.first { !taken.contains($0) } ?? candidates[0]
     }
 
     /// Whitespace and a soft tint separate groups — no boxes inside boxes.
@@ -793,96 +714,5 @@ final class MicTester: ObservableObject {
                                  self.passed ? "above the gate" : "below the gate")
             self.running = false
         }
-    }
-}
-
-// MARK: - Recording mode
-
-struct ModeEditor: View {
-    @Binding var mode: RecordingMode
-    let conflicts: [KeyBinding]
-    let models: [String]
-    let onDelete: () -> Void
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack {
-                TextField("Name", text: $mode.name)
-                    .textFieldStyle(.roundedBorder)
-                    .font(.system(size: 13, weight: .medium))
-                Toggle("Enabled", isOn: $mode.enabled).toggleStyle(.switch).labelsHidden()
-                Button(role: .destructive, action: onDelete) { Image(systemName: "trash") }
-                    .buttonStyle(.borderless)
-            }
-            Group {
-                KeyRecorderField(title: "Start / stop", binding: $mode.binding,
-                                 conflictsWith: conflicts, allowBareModifier: false)
-                Picker("Listen to", selection: $mode.input) {
-                    ForEach(AudioInput.allCases) { Text($0.label).tag($0) }
-                }
-                if mode.input == .system {
-                    Text("Records what this Mac plays, before it reaches the speakers — the call or video itself, not the room. macOS asks once to allow System Audio Recording.")
-                        .font(.caption).foregroundStyle(Palette.muted)
-                } else {
-                    Picker("Microphone", selection: $mode.micDevice) {
-                        Text("System default").tag(InputDevice.systemDefault)
-                        Text("This Mac's built-in mic").tag(InputDevice.builtInMic)
-                        ForEach(InputDevice.all(), id: \.uid) { Text($0.name).tag($0.uid) }
-                    }
-                    Text("AirPods and headsets aim at your mouth and filter out everyone else — a lecturer across the room is removed before Yapperroni hears it. Use the built-in mic, or an iPhone placed nearer the front.")
-                        .font(.caption).foregroundStyle(Palette.muted)
-                    Toggle("Max mic sensitivity while recording", isOn: $mode.maxMicGain)
-                }
-                Picker("Model", selection: $mode.modelFilename) {
-                    ForEach(models, id: \.self) { Text(Engines.label($0)).tag($0) }
-                    if !models.contains(mode.modelFilename) {
-                        Text("\(Engines.label(mode.modelFilename)) — missing, uses dictation model")
-                            .tag(mode.modelFilename)
-                    }
-                }
-                Picker("When finished", selection: $mode.output) {
-                    ForEach(OutputMode.allCases) { Text($0.label).tag($0) }
-                }
-                Toggle("Live transcription", isOn: $mode.live)
-                if mode.live, mode.maxMinutes == 0 || mode.maxMinutes > 10 {
-                    Text("Live mode re-transcribes the whole recording every half second. Past a few minutes it falls behind — leave it off for long recordings.")
-                        .font(.caption).foregroundStyle(.orange)
-                }
-                Picker("Language", selection: $mode.language) {
-                    ForEach(Languages.all, id: \.code) { Text($0.name).tag($0.code) }
-                }
-                Toggle("Skip silence (voice detection)", isOn: $mode.vad)
-                    .disabled(!mode.modelFilename.hasSuffix(".bin"))
-                if mode.vad {
-                    Text("Helps when a recording has long silences. On a quiet or muffled speaker it can mistake speech for silence and drop it — leave it off for those.")
-                        .font(.caption).foregroundStyle(.orange)
-                }
-                Toggle("Accurate decoding (slower)", isOn: $mode.accurate)
-                    .disabled(!mode.modelFilename.hasSuffix(".bin"))
-                Text(ModeEditor.modelNote(mode.modelFilename))
-                    .font(.caption).foregroundStyle(Palette.muted)
-                Toggle("Filter background noise", isOn: $mode.voiceIsolation)
-                    .disabled(mode.input == .system)
-                Toggle("Stop after \(Int(Config.maxSilenceSeconds))s of silence", isOn: $mode.stopOnSilence)
-                Stepper(mode.maxMinutes == 0 ? "No length limit" : "Stop after \(Int(mode.maxMinutes)) min",
-                        value: $mode.maxMinutes, in: 0...600, step: 5)
-            }
-            .disabled(!mode.enabled)
-        }
-    }
-
-    /// What the chosen model does with the language, VAD and vocabulary settings.
-    static func modelNote(_ name: String) -> String {
-        let n = name.lowercased()
-        if n.contains("parakeet") {
-            return "Parakeet detects the language itself (25 European languages) and ignores the language setting, voice detection, accurate decoding and the Vocabulary list."
-        }
-        if n.contains("canary") {
-            return "Canary hears English, French, German or Spanish, and must be told which: \"Detect automatically\" means English. It ignores voice detection, accurate decoding and the Vocabulary list."
-        }
-        if n.contains(".en") {
-            return "English-only model: the language setting is ignored."
-        }
-        return "Detect automatically listens to the first 30 seconds and keeps that language for the whole recording."
     }
 }

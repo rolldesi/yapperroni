@@ -72,4 +72,4 @@ du -sh "$SUPPORT/ggml-$NAME-q5_0.bin" "$SUPPORT/ggml-$NAME-encoder.mlmodelc"
 echo
 echo "done. Check it:"
 echo "  /Applications/Yapperroni.app/Contents/MacOS/Yapperroni --selftest-whisper $W/samples/jfk.wav ggml-$NAME-q5_0.bin"
-echo "Then pick it in Settings → Recording modes → Model."
+echo "Then pick it in Modes → Room or Call → Model."

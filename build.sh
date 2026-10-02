@@ -173,6 +173,7 @@ swiftc \
   "$ROOT/Sources/MainWindow.swift" \
   "$ROOT/Sources/VocabWindow.swift" \
   "$ROOT/Sources/Views.swift" \
+  "$ROOT/Sources/ModesView.swift" \
   "$ROOT/Sources/Welcome.swift" \
   "$ROOT/Sources/Sherpa.swift" \
   "$ROOT/Sources/Whisper.swift" \

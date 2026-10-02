@@ -111,11 +111,12 @@ final class MainWindow: NSObject, NSWindowDelegate {
 }
 
 enum Section: String, CaseIterable, Identifiable {
-    case history, settings
+    case history, modes, settings
     var id: String { rawValue }
     var label: String {
         switch self {
         case .history:  return "History"
+        case .modes:    return "Modes"
         case .settings: return "Settings"
         }
     }

@@ -79,15 +79,19 @@ The other lever is the model. `large-v3-turbo` is from 2024 and much better at
 proper nouns, at roughly twice the latency — drop the `.bin` in the support
 folder and pick it in Settings → Model.
 
-## Recording modes
+## Modes
 
-Dictation is the push-to-talk key and the lock. A recording mode is another
-way to record on its own shortcut, with its own model and microphone settings.
-Settings → Recording modes; add as many as you like.
+Three ways to record, each on its own shortcut, chosen in the **Modes** tab by
+where the voice is coming from:
 
-A mode is always press-to-start, press-to-stop. It ships with two:
+- **Personal** — you, at your Mac: hold a key, speak, the text lands where
+  you're typing. The original app.
+- **Room** — lectures and meeting rooms, through this Mac's microphone.
+- **Call** — Teams, Zoom, Meet, any call or video: what the Mac plays.
 
-| | Dictation | Lecture (⌥L) | Online class (⌥O) |
+Room and Call are press-to-start, press-to-stop, and can each be switched off.
+
+| | Personal | Room (⌥L) | Call (⌥O) |
 |---|---|---|---|
 | Listens to | microphone | microphone | **computer audio** — the call itself, not the room |
 | Model | Settings → Model | Whisper large-v3-turbo | Whisper large-v3-turbo |
@@ -99,7 +103,7 @@ A mode is always press-to-start, press-to-stop. It ships with two:
 | Ends by itself | 3 min, or 3 s of silence hands-free | 180 min, never on silence | 180 min, never on silence |
 | When finished | paste at cursor | copy to clipboard, saved in History | copy to clipboard, saved in History |
 
-**Microphone** is chosen per mode. Lecture records from this Mac's built-in mic
+**Microphone** is chosen in Room. It records from this Mac's built-in mic
 whatever the system default is, at full input gain for the recording (put back
 afterwards): AirPods and headsets aim their mics at the wearer and filter out
 everyone else, so a professor across the room is removed before any app hears

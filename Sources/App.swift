@@ -112,6 +112,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         settings.$modes
             .dropFirst()
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in self?.refreshMenu() }
+            .store(in: &bag)
+
+        settings.$modes
+            .dropFirst()
             .map { $0.filter(\.enabled).map(\.modelFilename) }
             .removeDuplicates()
             .receive(on: DispatchQueue.main)
@@ -227,6 +233,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if settings.soundFeedback { NSSound(named: "Tink")?.play() }
 
         hud.show(source == .hold ? .listening : .locked, at: settings.hudPosition)
+        // Room and Call run for an hour with nothing typed, so the pill says
+        // which mode is listening and how to end it.
+        if let mode, !mode.live {
+            hud.setPartial("\(mode.name) · \(mode.binding.displayName) to stop")
+        }
         // Worth saying on the pill itself: the dictation model may be
         // English-only, and a French lecture through it comes out as noise.
         if let mode, engines[mode.modelFilename] == nil {
@@ -630,14 +641,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         } else if !state.modelReady {
             menu.addItem(withTitle: "Loading model…", action: nil, keyEquivalent: "")
         } else {
-            menu.addItem(withTitle: "Hold \(settings.binding.displayName) to dictate",
-                         action: nil, keyEquivalent: "")
-            if settings.lockEnabled {
-                menu.addItem(withTitle: "\(settings.lockBinding.displayName) to lock hands-free",
-                             action: nil, keyEquivalent: "")
-            }
-            for m in settings.modes where m.enabled {
-                menu.addItem(withTitle: "\(m.binding.displayName) to record \(m.name)",
+            let personal = "Personal — hold \(settings.binding.displayName)"
+                + (settings.lockEnabled ? ", or \(settings.lockBinding.displayName) hands-free" : "")
+            menu.addItem(withTitle: personal, action: nil, keyEquivalent: "")
+            for kind in ModeKind.allCases {
+                let m = settings.modes[kind.rawValue]
+                menu.addItem(withTitle: "\(kind.name) — \(m.enabled ? m.binding.displayName : "off")",
                              action: nil, keyEquivalent: "")
             }
         }
@@ -646,6 +655,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         add(menu, "Open Yapperroni", #selector(openWindow), key: "o")
         add(menu, "History…", #selector(openHistory))
+        add(menu, "Modes…", #selector(openModes))
         add(menu, "Settings…", #selector(openSettings), key: ",")
         menu.addItem(.separator())
 
@@ -670,6 +680,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func openWindow()   { MainWindow.shared.show(section: .history,  reason: "menu") }
     @objc private func openHistory()  { MainWindow.shared.show(section: .history,  reason: "menu") }
+    @objc private func openModes()    { MainWindow.shared.show(section: .modes,    reason: "menu") }
     @objc private func openSettings() { MainWindow.shared.show(section: .settings, reason: "menu") }
 
     @objc private func toggleLogin() {

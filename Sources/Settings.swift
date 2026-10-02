@@ -68,12 +68,25 @@ enum HUDPosition: String, Codable, CaseIterable, Identifiable {
     var label: String { rawValue.capitalized }
 }
 
-/// A second way to record, on its own shortcut: a lecture, a meeting, a long
-/// dictation into a smarter model. Dictation itself stays the push-to-talk key
-/// and the lock in Shortcuts, running on the global model and settings.
+/// How Yapperroni records, as three kinds the user picks between:
 ///
-/// A mode is always hands-free — press to start, press to stop. Nobody holds a
-/// key down through an hour of lecture.
+/// - **Personal** — the original app: hold a key, speak, the text lands at the
+///   caret. Its settings are the top-level ones in `Settings`, not a
+///   `RecordingMode`.
+/// - **Room** — a lecture or a meeting room, through this Mac's microphone.
+/// - **Call** — Teams, Zoom, a browser tab: what the Mac plays, captured
+///   before it reaches the speakers.
+///
+/// Room and Call are `RecordingMode`s, stored as `Settings.modes` in that fixed
+/// order (see `ModeKind`). Both are press-to-start, press-to-stop; nobody holds
+/// a key through an hour of lecture.
+enum ModeKind: Int, CaseIterable, Identifiable {
+    case room = 0, call = 1
+    var id: Int { rawValue }
+    var name: String { self == .room ? "Room" : "Call" }
+    var input: AudioInput { self == .room ? .microphone : .system }
+}
+
 struct RecordingMode: Codable, Equatable, Identifiable {
     var id = UUID()
     var name: String
@@ -113,8 +126,8 @@ struct RecordingMode: Codable, Equatable, Identifiable {
     /// buffer every tick, which grows without bound over an hour. Copy, not
     /// paste: an hour of text at whatever caret happens to be frontmost is
     /// never what anyone wants.
-    static let lecture = RecordingMode(
-        name: "Lecture",
+    static let room = RecordingMode(
+        name: "Room",
         binding: KeyBinding(keyCode: 37, deviceMask: 0,
                             modifierFlags: CGEventFlags.maskAlternate.rawValue, kind: .combo),
         modelFilename: Config.accurateModelFilename,
@@ -124,8 +137,8 @@ struct RecordingMode: Codable, Equatable, Identifiable {
 
     /// ⌥O. A class on Teams, Zoom or in a browser tab, recorded from the
     /// computer's own audio rather than through the air to the mic.
-    static let onlineClass = RecordingMode(
-        name: "Online class",
+    static let call = RecordingMode(
+        name: "Call",
         binding: KeyBinding(keyCode: 31, deviceMask: 0,
                             modifierFlags: CGEventFlags.maskAlternate.rawValue, kind: .combo),
         modelFilename: Config.accurateModelFilename,
@@ -133,9 +146,21 @@ struct RecordingMode: Codable, Equatable, Identifiable {
         accurate: false, maxMinutes: 180, stopOnSilence: false,
         input: .system)
 
-    static let defaults: [RecordingMode] = [.lecture, .onlineClass]
+    static let defaults: [RecordingMode] = [.room, .call]
 
-    /// What "Add mode" starts from: dictation defaults on the accurate model.
+    /// Whatever was saved, as exactly [Room, Call]. Builds before the three
+    /// kinds kept a free list of modes ("Lecture", "Online class", anything
+    /// added); the first microphone mode becomes Room and the first
+    /// computer-audio mode becomes Call, keeping their shortcuts and settings.
+    /// Pure, for `--selftest-modes`.
+    static func normalized(_ saved: [RecordingMode]) -> [RecordingMode] {
+        var room = saved.first { $0.input == .microphone } ?? .room
+        var call = saved.first { $0.input == .system } ?? .call
+        room.name = ModeKind.room.name
+        call.name = ModeKind.call.name
+        return [room, call]
+    }
+
     init(name: String, binding: KeyBinding, modelFilename: String,
          voiceIsolation: Bool, live: Bool, output: OutputMode,
          accurate: Bool, maxMinutes: Double, stopOnSilence: Bool,
@@ -174,13 +199,6 @@ struct RecordingMode: Codable, Equatable, Identifiable {
         input          = try c.decodeIfPresent(AudioInput.self, forKey: .input) ?? .microphone
         micDevice      = try c.decodeIfPresent(String.self, forKey: .micDevice) ?? InputDevice.systemDefault
         maxMicGain     = try c.decodeIfPresent(Bool.self, forKey: .maxMicGain) ?? false
-    }
-
-    static func blank(binding: KeyBinding) -> RecordingMode {
-        RecordingMode(name: "New mode", binding: binding,
-                      modelFilename: Config.accurateModelFilename,
-                      voiceIsolation: true, live: false, output: .paste,
-                      accurate: false, maxMinutes: 3, stopOnSilence: true)
     }
 }
 
@@ -389,11 +407,27 @@ final class Settings: ObservableObject {
     private static func decodeModes(_ data: Data?) -> [RecordingMode] {
         guard let data else { return RecordingMode.defaults }
         do {
-            return try JSONDecoder().decode([RecordingMode].self, from: data)
+            return RecordingMode.normalized(try JSONDecoder().decode([RecordingMode].self, from: data))
         } catch {
             Log.write("settings modes failed to decode (\(error)); using the defaults")
             return RecordingMode.defaults
         }
+    }
+
+    /// Which shortcut a recorder field is editing, so it can refuse every
+    /// other one. A duplicate would be swallowed by whichever combo the tap
+    /// tests first, and the other would silently never fire.
+    enum ShortcutSlot: Equatable { case hold, lock, vocab, mode(ModeKind) }
+
+    func shortcuts(except slot: ShortcutSlot) -> [KeyBinding] {
+        var out: [KeyBinding] = []
+        if slot != .hold { out.append(binding) }
+        if slot != .lock, lockEnabled { out.append(lockBinding) }
+        if slot != .vocab, vocabEnabled { out.append(vocabBinding) }
+        for kind in ModeKind.allCases where slot != .mode(kind) && modes[kind.rawValue].enabled {
+            out.append(modes[kind.rawValue].binding)
+        }
+        return out
     }
 
     /// A model the user dropped into the support folder wins over the one

@@ -43,6 +43,21 @@ enum Engines {
         return name
     }
 
+    /// What a model does with the language, skip-silence and vocabulary settings.
+    static func note(_ name: String) -> String {
+        let n = name.lowercased()
+        if n.contains("parakeet") {
+            return "Parakeet detects the language itself (25 European languages) and ignores the language setting, skip silence, accurate decoding and the Vocabulary list."
+        }
+        if n.contains("canary") {
+            return "Canary hears English, French, German or Spanish, and must be told which: \"Detect automatically\" means English. It ignores skip silence, accurate decoding and the Vocabulary list."
+        }
+        if n.contains(".en") {
+            return "English-only model: the language setting is ignored."
+        }
+        return "Detect automatically listens to the first 30 seconds and keeps that language for the whole recording."
+    }
+
     static func isModel(_ name: String, in dir: String) -> Bool {
         // The VAD weights are a whisper.cpp .bin too, but not a speech model.
         if name.hasSuffix(".bin") { return !name.contains("silero") }

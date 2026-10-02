@@ -766,7 +766,7 @@ func selftestModes() -> Never {
         if !ok { failures += 1 }
         print("  \(ok ? "ok  " : "FAIL") \(what)")
     }
-    var old = try! JSONSerialization.jsonObject(with: JSONEncoder().encode(RecordingMode.lecture)) as! [String: Any]
+    var old = try! JSONSerialization.jsonObject(with: JSONEncoder().encode(RecordingMode.room)) as! [String: Any]
     old["language"] = nil; old["vad"] = nil; old["input"] = nil
     old["micDevice"] = nil; old["maxMicGain"] = nil
     old["name"] = "Saved by 1.2"
@@ -774,7 +774,7 @@ func selftestModes() -> Never {
     let decoded = try? JSONDecoder().decode([RecordingMode].self, from: data)
     check("an older saved mode decodes", decoded?.count == 1)
     check("its own fields survive", decoded?.first?.name == "Saved by 1.2"
-          && decoded?.first?.binding == RecordingMode.lecture.binding)
+          && decoded?.first?.binding == RecordingMode.room.binding)
     check("missing fields take the defaults", decoded?.first?.language == "auto"
           && decoded?.first?.vad == false && decoded?.first?.input == .microphone)
     check("mic fields default for an older mode", decoded?.first?.micDevice == InputDevice.systemDefault
@@ -791,11 +791,22 @@ func selftestModes() -> Never {
     check("no built-in mic falls back to default",
           InputDevice.resolve("builtin", in: [mics[0]], default: 10) == 10)
     check("lecture preset records from the built-in mic at full gain",
-          RecordingMode.lecture.micDevice == InputDevice.builtInMic && RecordingMode.lecture.maxMicGain)
+          RecordingMode.room.micDevice == InputDevice.builtInMic && RecordingMode.room.maxMicGain)
+
+    print("modes as the three kinds:")
+    var lecture = RecordingMode.room; lecture.name = "Lecture"; lecture.maxMinutes = 90
+    var online = RecordingMode.call; online.name = "Online class"
+    var extra = RecordingMode.room; extra.name = "Extra"
+    let n = RecordingMode.normalized([online, lecture, extra])
+    check("old Lecture becomes Room, settings kept", n[0].name == "Room" && n[0].maxMinutes == 90)
+    check("old Online class becomes Call", n[1].name == "Call" && n[1].input == .system)
+    check("always exactly [Room, Call]", n.count == 2)
+    let empty = RecordingMode.normalized([])
+    check("nothing saved gives the defaults", empty[0].input == .microphone && empty[1].input == .system)
 
     let round = try? JSONDecoder().decode(RecordingMode.self,
-                                          from: JSONEncoder().encode(RecordingMode.onlineClass))
-    check("a current mode round-trips", round == RecordingMode.onlineClass)
+                                          from: JSONEncoder().encode(RecordingMode.call))
+    check("a current mode round-trips", round == RecordingMode.call)
     print(failures == 0 ? "PASS" : "FAIL: \(failures) case(s)")
     exit(failures == 0 ? 0 : 1)
 }
