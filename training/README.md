@@ -57,6 +57,19 @@ part is for a cloud GPU. The restore pass runs at ~3.8 clips/s here, so
 plugged in with the lid open: closing the lid sleeps the Mac whatever
 `caffeinate` says.
 
+## On a dedicated Mac (the M2, over SSH)
+
+    ./service.sh install     # LaunchAgent: starts at login, restarts if killed
+    ./service.sh status
+    ./service.sh stop        # saves, then stops and removes the service
+
+Checkpoints go to `hf:rolldesi/yapperroni-train` hourly, charts to
+wandb.ai/roll-desi/yapperroni. Measured on the M2 (decoder-only, batch 8):
+0.76 clips/s in fp32, 0.80 fp16, 0.52 bf16 — its GPU has no native bf16, so
+the service sets `YAPPERRONI_DTYPE=fp32`. That is ~3.4× slower than the M5,
+hence `MAX_STEPS=2000` by default. Needs `sudo pmset -a disablesleep 1` to
+keep running with the lid closed.
+
 ## Back into Yapperroni (on this Mac)
 
     ./export.sh hf:yourname/yapperroni-train          # best checkpoint

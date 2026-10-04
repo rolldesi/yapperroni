@@ -1,4 +1,6 @@
 """Whisper, LoRA, batching — shared by prepare.py, train.py and export."""
+import os
+
 import numpy as np
 import torch
 from transformers import WhisperForConditionalGeneration, WhisperProcessor
@@ -13,6 +15,12 @@ LORA_TARGETS = ["q_proj", "k_proj", "v_proj", "out_proj", "fc1", "fc2"]
 def device_and_dtype(prefer: str = "auto"):
     if prefer == "cpu":
         return torch.device("cpu"), torch.float32
+    # YAPPERRONI_DTYPE=fp32 for Apple GPUs without native bf16. Measured,
+    # decoder-only, batch 8: an M2 trains at 0.52 clips/s in bf16 (emulated),
+    # 0.80 in fp16, 0.76 in fp32 — fp32 is as fast and needs no loss scaling.
+    forced = {"fp32": torch.float32, "bf16": torch.bfloat16}.get(os.environ.get("YAPPERRONI_DTYPE", ""))
+    if forced is not None and torch.backends.mps.is_available():
+        return torch.device("mps"), forced
     if torch.cuda.is_available():
         # T4 and P100 have no bf16; fp16 with a GradScaler is the path there.
         bf16 = torch.cuda.is_bf16_supported()
