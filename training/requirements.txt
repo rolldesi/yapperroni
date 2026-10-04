@@ -6,7 +6,6 @@
 torch>=2.4
 transformers==5.18.0
 peft==0.21.2
-datasets==5.0.1
 huggingface_hub==1.33.0
 safetensors==0.8.0
 soundfile==0.14.0

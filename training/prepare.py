@@ -55,11 +55,16 @@ def main():
             print(f"{name}: already complete ({state['rows']} rows)")
             continue
         ds = data.stream(src, local.get(name))
-        if "stream" in state:
+        if set(state.get("stream", {})) >= {"pass", "file", "group", "row"}:
             ds.load_state_dict(state["stream"])
-        print(f"{name}: resuming at {state['rows']} rows" if state["rows"] else f"{name}: starting")
+        # Keys already restored are skipped on sight, so even a position
+        # saved in another format (or none) never restores a clip twice.
+        seen_keys = set()
+        for part in sorted(store.path(sub).glob("part-*.parquet")):
+            seen_keys.update(pq.read_table(part, columns=["key"]).column("key").to_pylist())
+        print(f"{name}: resuming at {state['rows']} rows" if state["rows"] else f"{name}: starting", flush=True)
 
-        rows, queue, t0, seen_keys = [], [], time.time(), set()
+        rows, queue, t0 = [], [], time.time()
 
         def run_queue():
             if not queue:

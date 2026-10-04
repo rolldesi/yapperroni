@@ -120,7 +120,7 @@ def main():
     sched = get_cosine_schedule_with_warmup(opt, a.warmup, a.max_steps)
     scaler = torch.amp.GradScaler("cuda", enabled=(dtype == torch.float16))
 
-    epoch, wandb_id = 0, None
+    wandb_id = None
     stream = data.mixed(mix, a.seed, local)
     step, best, history = 0, float("inf"), []
     if store.pull("checkpoints/latest/meta.json"):
@@ -133,9 +133,7 @@ def main():
         tr = torch.load(ck / "trainer.pt", map_location="cpu", weights_only=True)
         opt.load_state_dict(tr["opt"]); sched.load_state_dict(tr["sched"]); scaler.load_state_dict(tr["scaler"])
         random.setstate(tr["py_rng"]); torch.set_rng_state(tr["torch_rng"])
-        epoch = meta.get("epoch", 0)
         wandb_id = meta.get("wandb_id")
-        stream = data.mixed(mix, a.seed + epoch, local)
         stream.load_state_dict(meta["stream"])
         step, best, history = meta["step"], meta["best"], meta["history"]
         print(f"resumed at step {step} (best mean WER {best:.4f})")
@@ -167,7 +165,7 @@ def main():
         if improved:
             best = metrics["mean_wer"]
         (stage / "meta.json").write_text(json.dumps(
-            {"step": step, "epoch": epoch, "best": best, "history": history, "stream": stream.state_dict(),
+            {"step": step, "epoch": stream.epoch, "best": best, "history": history, "stream": stream.state_dict(),
              "wandb_id": wandb_id,
              "args": vars(a)}, default=str))
         if improved:
@@ -196,14 +194,14 @@ def main():
         save("baseline", run_eval())
 
     def rows():
-        # One pass over the mix is an epoch; the next one reshuffles. The
-        # epoch is part of the checkpoint so resume lands in the right pass.
-        nonlocal stream, epoch
-        while True:
-            yield from stream
-            epoch += 1
-            print(f"epoch {epoch} begins", flush=True)
-            stream = data.mixed(mix, a.seed + epoch, local)
+        # The mixer never runs out: each source starts a new, reshuffled pass
+        # on its own. An epoch is a full pass of the slowest source.
+        epoch = stream.epoch
+        for row in stream:
+            if stream.epoch != epoch:
+                epoch = stream.epoch
+                print(f"epoch {epoch} begins", flush=True)
+            yield row
 
     model.train()
     batch, micro, audio_secs, missing, t_log = [], 0, 0.0, 0, time.time()
@@ -242,7 +240,7 @@ def main():
         if step % 10 == 0:
             dt = time.time() - t_log
             log({"train/loss": loss.item() * a.accum, "train/lr": sched.get_last_lr()[0],
-                 "train/audio_seconds_per_second": audio_secs / dt, "train/epoch": epoch,
+                 "train/audio_seconds_per_second": audio_secs / dt, "train/epoch": stream.epoch,
                  "train/rows_without_target": missing})
             print(f"step {step} loss {loss.item() * a.accum:.4f} lr {sched.get_last_lr()[0]:.2e} "
                   f"{audio_secs / dt:.1f} s-audio/s{f' ({missing} rows had no restored target)' if missing else ''}",

@@ -76,8 +76,12 @@ def transcribe(model, processor, audios: list[np.ndarray], lang: str, device, dt
     out = []
     for i in range(0, len(audios), batch):
         feats = features(processor, audios[i:i + batch], device, dtype)
+        # use_cache=True overrides the config: training turns the cache off,
+        # and without it every new token re-runs the decoder over all the
+        # ones before it — the step-0 eval had not finished 600 clips after
+        # eleven minutes, and the GPU memory pool grew until macOS killed it.
         ids = model.generate(input_features=feats, language=lang, task="transcribe",
-                             return_timestamps=False, max_new_tokens=440)
+                             return_timestamps=False, max_new_tokens=440, use_cache=True)
         out += [t.strip() for t in processor.batch_decode(ids, skip_special_tokens=True)]
     if was_training:
         model.train()

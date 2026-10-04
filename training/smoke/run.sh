@@ -11,6 +11,7 @@ PY=.venv/bin/python
 $PY text.py | tail -1
 $PY smoke/check_labels.py | tail -1
 $PY smoke/make_fixtures.py | tail -1
+$PY smoke/check_stream.py | tail -1
 F=smoke/fixtures
 L="ami_ihm=$F/ami_ihm.parquet,ami_sdm=$F/ami_sdm.parquet,vox_en=$F/vox_en.parquet,vox_fr=$F/vox_fr.parquet"
 L="$L,vox_french_accent=$F/vox_french_accent.parquet,ami_far_field=$F/ami_far_field.parquet,earnings22_calls=$F/earnings22_calls.parquet"

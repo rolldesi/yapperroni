@@ -1,16 +1,25 @@
 """Public speech data, streamed — nothing is downloaded whole.
 
 Every source is read from the Hugging Face Parquet mirror of the dataset,
-which needs no loading script and no account. Audio is decoded here with
-soundfile rather than by `datasets`, which keeps its own decoder dependency
-(and its version churn) out of the picture.
+which needs no loading script and no account, with pyarrow over HTTP range
+requests, 64 rows at a time.
+
+Not through the `datasets` library: on real VoxPopuli its interleave read
+ahead to infer column types and kept what it downloaded, growing at the
+download rate — 37 GB of footprint in ten minutes on a 16 GB Mac, killed by
+macOS before the first training step, three times. Here memory is one small
+batch per source, and the resume position is exact (pass, file, row group,
+row) rather than a shuffle buffer refilled on resume.
 """
 import io
+import time
+import urllib.error
+import urllib.request
 from dataclasses import dataclass, field
 
 import numpy as np
+import pyarrow.parquet as pq
 import soundfile as sf
-from datasets import Audio, interleave_datasets, load_dataset
 
 SR = 16_000
 MAX_SECONDS = 30.0  # whisper's window; longer clips would be truncated
@@ -30,8 +39,12 @@ class Source:
     restore: bool = True
     where: dict = field(default_factory=dict)  # column -> required value
 
-    def url(self) -> str:
-        return f"hf://datasets/{self.repo}@refs%2Fconvert%2Fparquet/{self.config}/{self.split}/*.parquet"
+    def files(self) -> list[str]:
+        from huggingface_hub import HfApi
+        tree = HfApi().list_repo_tree(self.repo, path_in_repo=f"{self.config}/{self.split}",
+                                      repo_type="dataset", revision="refs/convert/parquet")
+        return sorted(f"https://huggingface.co/datasets/{self.repo}/resolve/refs%2Fconvert%2Fparquet/{f.path}"
+                      for f in tree if f.path.endswith(".parquet"))
 
 
 AMI_KEY = ("meeting_id", "speaker_id", "begin_time", "end_time")
@@ -79,32 +92,172 @@ def decode(audio: dict) -> np.ndarray | None:
     return x
 
 
-def stream(src: Source, local_files: list[str] | None = None):
-    """Rows with raw audio bytes. `local_files` swaps the remote Parquet for
-    local ones — the smoke test runs on a few hundred rows this way."""
-    ds = load_dataset("parquet", data_files=local_files or src.url(), split="train", streaming=True)
-    ds = ds.cast_column("audio", Audio(decode=False))
-    for col, val in src.where.items():
-        ds = ds.filter(lambda r, c=col, v=val: r[c] == v)
-    return ds
+class _HTTPFile(io.RawIOBase):
+    """Seekable read-only file over HTTP Range requests, so pyarrow can read
+    just the row groups it needs. A small block cache, and retries: long runs
+    meet read timeouts (one is how the first local run's log ended)."""
+    BLOCK = 4 << 20
+
+    def __init__(self, url: str, blocks: int = 8):
+        self.url, self.pos, self.cache, self.max = url, 0, {}, blocks
+        with self._open(urllib.request.Request(url, method="HEAD")) as r:
+            self.size = int(r.headers["Content-Length"])
+
+    @staticmethod
+    def _open(req):
+        for attempt in range(6):
+            try:
+                return urllib.request.urlopen(req, timeout=60)
+            except (urllib.error.URLError, TimeoutError, ConnectionError) as e:
+                if attempt == 5:
+                    raise
+                time.sleep(2 ** attempt)
+                print(f"retrying after {e!r}", flush=True)
+
+    def readable(self): return True
+    def seekable(self): return True
+    def tell(self): return self.pos
+
+    def seek(self, off, whence=0):
+        self.pos = off if whence == 0 else self.pos + off if whence == 1 else self.size + off
+        return self.pos
+
+    def _block(self, i):
+        if i not in self.cache:
+            a = i * self.BLOCK
+            b = min(self.size, a + self.BLOCK) - 1
+            with self._open(urllib.request.Request(self.url, headers={"Range": f"bytes={a}-{b}"})) as r:
+                self.cache[i] = r.read()
+            if len(self.cache) > self.max:
+                self.cache.pop(next(iter(self.cache)))
+        return self.cache[i]
+
+    def read(self, n=-1):
+        n = self.size - self.pos if n < 0 else max(0, min(n, self.size - self.pos))
+        out = bytearray()
+        while n > 0:
+            i, o = divmod(self.pos, self.BLOCK)
+            chunk = self._block(i)[o:o + n]
+            out += chunk
+            self.pos += len(chunk)
+            n -= len(chunk)
+        return bytes(out)
+
+    def readinto(self, b):
+        d = self.read(len(b))
+        b[:len(d)] = d
+        return len(d)
 
 
-def mixed(mix: dict[str, float], seed: int, local: dict[str, list[str]] | None = None):
-    """One stream drawing from each source in proportion. Every row carries
-    its source name, so the batch knows which language prefix and which
-    restored-target table it needs."""
-    names = list(mix)
-    parts = []
-    for n in names:
-        src = TRAIN[n]
-        cols = ["audio", src.text, *src.key]
-        ds = stream(src, (local or {}).get(n)).select_columns(cols)
-        ds = ds.map(lambda r, n=n, s=src: {"source": n, "key": key_of(r, s), "human": r[s.text]},
-                    remove_columns=[c for c in cols if c != "audio"])
-        parts.append(ds.shuffle(seed=seed, buffer_size=500))
-    total = sum(mix.values())
-    return interleave_datasets(parts, probabilities=[mix[n] / total for n in names], seed=seed,
-                               stopping_strategy="all_exhausted")
+def _open_parquet(path: str) -> pq.ParquetFile:
+    if path.startswith("http"):
+        # buffer_size streams each column chunk in pieces instead of reading
+        # a whole 650 MB row group of audio into memory at once.
+        return pq.ParquetFile(_HTTPFile(path), buffer_size=4 << 20, pre_buffer=False)
+    return pq.ParquetFile(path)
+
+
+class ParquetStream:
+    """One source, row group by row group, 64 rows at a time.
+
+    Shuffled by file, by row group within a file, and by row within each
+    batch — every order derived from (seed, pass, position), so the state is
+    four integers and a resume replays exactly the same sequence. With
+    `cycle` it starts a new, differently shuffled pass when it runs out."""
+    BATCH = 64
+
+    def __init__(self, src: Source, local_files=None, seed: int = 0, shuffle: bool = True, cycle: bool = False):
+        self.src, self.seed, self.shuffle, self.cycle = src, seed, shuffle, cycle
+        self.paths = list(local_files) if local_files else src.files()
+        self.columns = list(dict.fromkeys(["audio", src.text, *src.key, *src.where]))
+        self.state = {"pass": 0, "file": 0, "group": 0, "row": 0}
+
+    def state_dict(self) -> dict:
+        return dict(self.state)
+
+    def load_state_dict(self, state: dict) -> None:
+        self.state = {k: int(state[k]) for k in ("pass", "file", "group", "row")}
+
+    def _order(self, n: int, *salt: int) -> np.ndarray:
+        if not self.shuffle:
+            return np.arange(n)
+        return np.random.default_rng([self.seed, self.state["pass"], *salt]).permutation(n)
+
+    def __iter__(self):
+        st = self.state
+        while True:
+            files = self._order(len(self.paths))
+            while st["file"] < len(files):
+                pf = _open_parquet(self.paths[files[st["file"]]])
+                groups = self._order(pf.num_row_groups, st["file"] + 1)
+                while st["group"] < len(groups):
+                    g = int(groups[st["group"]])
+                    seen = 0
+                    for b, batch in enumerate(pf.iter_batches(batch_size=self.BATCH, row_groups=[g],
+                                                              columns=self.columns)):
+                        rows = batch.to_pylist()
+                        for i in self._order(len(rows), st["file"] + 1, g + 1, b + 1):
+                            seen += 1
+                            if seen <= st["row"]:
+                                continue  # resuming: already handed out before the stop
+                            st["row"] = seen
+                            row = rows[i]
+                            if all(row[c] == v for c, v in self.src.where.items()):
+                                yield row
+                    st["group"] += 1
+                    st["row"] = 0
+                st["file"] += 1
+                st["group"] = 0
+            if not self.cycle:
+                return
+            self.state = st = {"pass": st["pass"] + 1, "file": 0, "group": 0, "row": 0}
+
+
+def stream(src: Source, local_files: list[str] | None = None) -> ParquetStream:
+    """One pass, in file order — for the restore pass and the eval sets."""
+    return ParquetStream(src, local_files, shuffle=False)
+
+
+class Mixer:
+    """Draws from each source in proportion, forever. Which source each draw
+    takes is a function of (seed, draw number), so resume needs only the
+    draw count and each source's position. `epoch` is the number of complete
+    passes the slowest source has made."""
+
+    def __init__(self, mix: dict[str, float], seed: int, local: dict[str, list[str]] | None = None):
+        self.names = list(mix)
+        total = sum(mix.values())
+        self.p = np.array([mix[n] / total for n in self.names])
+        self.seed = seed
+        self.draws = 0
+        self.streams = {n: ParquetStream(TRAIN[n], (local or {}).get(n), seed=seed + k + 1, cycle=True)
+                        for k, n in enumerate(self.names)}
+
+    @property
+    def epoch(self) -> int:
+        return min(s.state["pass"] for s in self.streams.values())
+
+    def state_dict(self) -> dict:
+        return {"draws": self.draws, "streams": {n: s.state_dict() for n, s in self.streams.items()}}
+
+    def load_state_dict(self, state: dict) -> None:
+        self.draws = int(state["draws"])
+        for n, s in state["streams"].items():
+            if n in self.streams:
+                self.streams[n].load_state_dict(s)
+
+    def __iter__(self):
+        its = {n: iter(s) for n, s in self.streams.items()}
+        while True:
+            n = self.names[np.random.default_rng([self.seed, self.draws]).choice(len(self.names), p=self.p)]
+            self.draws += 1
+            src = TRAIN[n]
+            r = next(its[n])
+            yield {"source": n, "key": key_of(r, src), "human": r[src.text], "audio": r["audio"]}
+
+
+def mixed(mix: dict[str, float], seed: int, local: dict[str, list[str]] | None = None) -> Mixer:
+    return Mixer(mix, seed, local)
 
 
 def eval_rows(name: str, n: int, local_files: list[str] | None = None) -> list[dict]:
