@@ -18,7 +18,10 @@ def device_and_dtype(prefer: str = "auto"):
         bf16 = torch.cuda.is_bf16_supported()
         return torch.device("cuda"), (torch.bfloat16 if bf16 else torch.float16)
     if torch.backends.mps.is_available():
-        return torch.device("mps"), torch.float32
+        # Measured on an M5 (turbo, LoRA, batch 4): bf16 is 2.6 clips/s
+        # against 1.0 in fp32 decoder-only, and 0.31 against 0.20 with the
+        # encoder trained too. No GradScaler needed: bf16 has fp32's range.
+        return torch.device("mps"), torch.bfloat16
     return torch.device("cpu"), torch.float32
 
 

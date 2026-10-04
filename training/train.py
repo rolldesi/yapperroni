@@ -106,7 +106,8 @@ def main():
     local = {k: [v] for k, v in (p.split("=") for p in a.local.split(",") if p)}
     mix = {k: float(v) for k, v in (p.split("=") for p in a.mix.split(","))}
     device, dtype = M.device_and_dtype(a.device)
-    amp = (lambda: torch.autocast("cuda", dtype=dtype)) if device.type == "cuda" else contextlib.nullcontext
+    amp = ((lambda: torch.autocast(device.type, dtype=dtype))
+           if device.type in ("cuda", "mps") and dtype != torch.float32 else contextlib.nullcontext)
     print(f"device {device} {dtype}")
 
     processor, model = M.load(a.model, device, dtype)

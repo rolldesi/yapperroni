@@ -35,6 +35,28 @@ whole run is one chart however many sessions it takes.
 
 Re-run whichever cell you are on in each new session, on either platform.
 
+## On this Mac instead
+
+    nohup caffeinate -i ./local.sh >/dev/null 2>&1 &     # start, detached
+    tail -f runs/local/run.log                           # watch
+    pkill -f "train.py --store runs/local"               # stop; rerun to resume
+
+Measured on an M5 MacBook Air (16 GB), turbo with LoRA, batch 4:
+
+| | clips/s | memory |
+|---|---|---|
+| full model, fp32 | 0.20 | 9.6 GB |
+| full model, bf16 | 0.31 | 6.7 GB |
+| decoder only, fp32 | 0.99 | 4.5 GB |
+| **decoder only, bf16** | **2.62** | **2.5 GB** |
+
+`local.sh` runs the last row: the decoder learns vocabulary, phrasing and
+language; the encoder, where accents and rooms live, stays frozen — that
+part is for a cloud GPU. The restore pass runs at ~3.8 clips/s here, so
+`AMI_ROWS=30000` (the default, a third of AMI) takes about two hours. Keep it
+plugged in with the lid open: closing the lid sleeps the Mac whatever
+`caffeinate` says.
+
 ## Back into Yapperroni (on this Mac)
 
     ./export.sh hf:yourname/yapperroni-train          # best checkpoint
