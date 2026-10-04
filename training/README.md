@@ -39,7 +39,7 @@ Re-run whichever cell you are on in each new session, on either platform.
 
     nohup caffeinate -i ./local.sh >/dev/null 2>&1 &     # start, detached
     tail -f runs/local/run.log                           # watch
-    pkill -f "train.py --store runs/local"               # stop; rerun to resume
+    pkill -TERM -f "bash ./local.sh"                     # pause: saves, then exits; rerun to resume
 
 Measured on an M5 MacBook Air (16 GB), turbo with LoRA, batch 4:
 
