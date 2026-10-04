@@ -11,6 +11,7 @@ macOS before the first training step, three times. Here memory is one small
 batch per source, and the resume position is exact (pass, file, row group,
 row) rather than a shuffle buffer refilled on resume.
 """
+import http.client
 import io
 import time
 import urllib.error
@@ -126,8 +127,22 @@ class _HTTPFile(io.RawIOBase):
         if i not in self.cache:
             a = i * self.BLOCK
             b = min(self.size, a + self.BLOCK) - 1
-            with self._open(urllib.request.Request(self.url, headers={"Range": f"bytes={a}-{b}"})) as r:
-                self.cache[i] = r.read()
+            # The whole fetch is retried, not just the connect: the night of
+            # 4 Oct a connection dropped mid-body (IncompleteRead) and took
+            # the training process down with it.
+            for attempt in range(6):
+                try:
+                    with self._open(urllib.request.Request(self.url, headers={"Range": f"bytes={a}-{b}"})) as r:
+                        data = r.read()
+                    if len(data) == b - a + 1:
+                        break
+                    raise http.client.IncompleteRead(data, b - a + 1 - len(data))
+                except (http.client.HTTPException, urllib.error.URLError, TimeoutError, ConnectionError) as e:
+                    if attempt == 5:
+                        raise
+                    print(f"retrying block {i} after {e!r}", flush=True)
+                    time.sleep(2 ** attempt)
+            self.cache[i] = data
             if len(self.cache) > self.max:
                 self.cache.pop(next(iter(self.cache)))
         return self.cache[i]
