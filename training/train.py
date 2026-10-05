@@ -151,6 +151,19 @@ def main():
         if wb:
             wb.log(d, step=step)
 
+    # Emailed (or posted to Slack) when "Scriptable run alerts" is on in the
+    # W&B user settings: the run is unattended, on a machine nobody looks at.
+    def alert(title: str, text: str, warn: bool = False):
+        print(f"alert: {title} — {text}", flush=True)
+        if wb:
+            import wandb
+            wb.alert(title=title, text=text,
+                     level=wandb.AlertLevel.WARN if warn else wandb.AlertLevel.INFO)
+
+    if step > 0:
+        alert("Training resumed", f"Resumed at step {step} of {a.max_steps}"
+              f" (best mean WER so far {best * 100:.1f}%).")
+
     targets = {} if a.raw_targets else load_targets(
         store, {data.TARGETS_FROM.get(n, n) for n in mix if data.TRAIN[n].restore})
     evals = load_eval(store, list(data.EVAL), a.eval_n, local)
@@ -177,7 +190,20 @@ def main():
 
     def run_eval():
         m = evaluate(model, processor, evals, device, dtype, amp)
+        base = history[0] if history else None
         history.append({"step": step, **m})
+        if base is not None and step < a.max_steps:  # the last eval is in "Training finished"
+            new_best = m["mean_wer"] < best
+            alert(f"Step {step}: mean WER {m['mean_wer'] * 100:.1f}%" + (" — new best" if new_best else ""),
+                  f"Baseline {base['mean_wer'] * 100:.1f}%, best before {best * 100:.1f}%. " + ", ".join(
+                      f"{k} {v['wer'] * 100:.1f}%" for k, v in m.items() if k != "mean_wer"))
+            # The regression WER cannot see: training starts writing without punctuation.
+            dropped = [k for k, v in m.items() if k != "mean_wer" and v.get("punctuated") is not None
+                       and base[k].get("punctuated") is not None
+                       and v["punctuated"] < base[k]["punctuated"] - 0.15]
+            if dropped:
+                alert(f"Step {step}: punctuation dropping", "Punctuated share fell more than 15 points below "
+                      "the baseline on " + ", ".join(dropped) + ".", warn=True)
         log({"eval/mean_wer": m["mean_wer"], **{f"eval/{k}/{f}": v[f] for k, v in m.items()
                                                  if isinstance(v, dict) for f in v if v[f] is not None}})
         print("eval step %d: " % step + "  ".join(
@@ -256,6 +282,8 @@ def main():
 
     if step >= a.max_steps:
         save("finished", run_eval())
+        alert("Training finished", f"Reached step {step}. Best mean WER {best * 100:.1f}% "
+              f"(baseline {history[0]['mean_wer'] * 100:.1f}%). Pull checkpoints/best from the HF repo.")
     else:
         save("session limit — rerun to continue")
     if wb:

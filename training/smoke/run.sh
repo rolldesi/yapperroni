@@ -36,7 +36,10 @@ kill -9 $PID 2>/dev/null || true
 grep -o "saved step [0-9]* (timer)" runs/smoke-1.log | tail -1 || { echo "FAIL: no timed save before the kill"; exit 1; }
 
 echo "== resume to the end"
-$PY train.py "${ARGS[@]}" 2>&1 | quiet | grep -E "resumed|epoch|eval step|saved step" | tail -8
+$PY train.py "${ARGS[@]}" 2>&1 | quiet | tee runs/smoke-2.log | grep -E "resumed|epoch|eval step|saved step|alert:" | tail -10
+for a in "Training resumed" "Step [0-9]*: mean WER" "Training finished"; do
+    grep -q "alert: $a" runs/smoke-2.log || { echo "FAIL: no \"$a\" alert"; exit 1; }
+done
 $PY - <<'EOF'
 import json
 m = json.load(open("runs/smoke/checkpoints/latest/meta.json"))
