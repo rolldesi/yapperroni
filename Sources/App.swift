@@ -61,6 +61,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var streamer: StreamingTranscriber?
     /// Serial, so live chunks reach the target app in the order they settled.
     private let typeQueue = DispatchQueue(label: "yapperroni.typing")
+    /// Reads `yapperroni://speak` text aloud. Retained: a synthesizer that is
+    /// deallocated mid-utterance just stops.
+    private let speaker = AVSpeechSynthesizer()
+    /// A reply that arrived mid-recording, spoken once the mic is off.
+    private var pendingReply: String?
 
     func applicationDidFinishLaunching(_ note: Notification) {
         // After a DMG install, an older copy elsewhere on disk can still be
@@ -182,6 +187,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // MARK: - Dictation
 
     private func beginDictation(_ source: Hotkey.Source = .hold) {
+        // Press = barge-in. Before the guards, so even a rejected press silences.
+        if speaker.isSpeaking { Log.write("speak   stopped by press") }
+        speaker.stopSpeaking(at: .immediate)
         var mode: RecordingMode?
         if case .mode(let i) = source, settings.modes.indices.contains(i) { mode = settings.modes[i] }
         guard let engine = engine(for: mode?.modelFilename ?? settings.modelFilename) else {
@@ -328,6 +336,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         let pcm = recorder.stop()
         state.dictating = false
+        if let reply = pendingReply { pendingReply = nil; speak(reply) }
         let seconds = Double(pcm.count) / Config.sampleRate
         let target = targetApp
         // A lecture's history row says "Lecture", not whichever app happened
@@ -503,6 +512,50 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                  at: settings.hudPosition)
         hud.hide(after: 1.0)
         refreshMenu()
+    }
+
+    // MARK: - Speaking replies
+
+    /// `yapperroni://speak?text=…` reads text aloud, `yapperroni://stop` cuts
+    /// it off; Claude Code's Stop and UserPromptSubmit hooks send them.
+    /// Feedback is handled by half-duplex: speaker and mic are never on
+    /// together, so neither the mic nor the computer-audio tap hears a reply.
+    /// Echo cancellation was the alternative, but voice processing only
+    /// cancels what its own engine plays, and it is released between sessions.
+    func application(_ application: NSApplication, open urls: [URL]) {
+        for url in urls where url.scheme == "yapperroni" {
+            switch url.host {
+            case "speak":
+                // Any local process can open this URL, so the text is capped.
+                let text = URLComponents(url: url, resolvingAgainstBaseURL: false)?
+                    .queryItems?.first { $0.name == "text" }?.value ?? ""
+                speak(String(text.prefix(2000)))
+            case "stop":
+                if speaker.isSpeaking { Log.write("speak   stopped by url") }
+                speaker.stopSpeaking(at: .immediate)
+                pendingReply = nil
+            default:
+                Log.write("speak   unknown url host \(url.host ?? "nil")")
+            }
+        }
+    }
+
+    private func speak(_ text: String) {
+        guard !text.isEmpty else { return }
+        guard settings.speakReplies else {
+            return Log.write("speak   skipped \(text.count) chars — off in Settings")
+        }
+        if recorder.isRecording {
+            pendingReply = text
+            return Log.write("speak   deferred \(text.count) chars — recording")
+        }
+        Log.write("speak   \(text.count) chars")
+        speaker.stopSpeaking(at: .immediate)
+        let u = AVSpeechUtterance(string: text)
+        // Voice and rate come from System Settings › Accessibility › Spoken
+        // Content — no picker here to keep in sync with it.
+        u.prefersAssistiveTechnologySettings = true
+        speaker.speak(u)
     }
 
     private func flash(_ message: String, _ seconds: TimeInterval) {

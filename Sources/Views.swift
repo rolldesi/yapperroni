@@ -456,6 +456,7 @@ struct SettingsView: View {
                         ForEach(HUDPosition.allCases) { Text($0.label).tag($0) }
                     }
                     Toggle("Play a sound when dictation starts and stops", isOn: $settings.soundFeedback)
+                    Toggle("Read Claude's replies aloud (stops when you dictate)", isOn: $settings.speakReplies)
                 }
 
                 group("History") {

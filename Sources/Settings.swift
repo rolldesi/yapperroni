@@ -308,6 +308,9 @@ final class Settings: ObservableObject {
     /// here biases recognition toward it.
     @Published var customVocabulary: String    { didSet { d.set(customVocabulary, forKey: "customVocabulary") } }
     @Published var soundFeedback: Bool         { didSet { d.set(soundFeedback, forKey: "soundFeedback") } }
+    /// Read aloud text that arrives on `yapperroni://speak` — Claude Code's
+    /// Stop hook sends each reply there.
+    @Published var speakReplies: Bool          { didSet { d.set(speakReplies, forKey: "speakReplies") } }
     @Published var historyEnabled: Bool        { didSet { d.set(historyEnabled, forKey: "historyEnabled") } }
     @Published var historyLimit: Int           { didSet { d.set(historyLimit, forKey: "historyLimit") } }
     @Published var minPeakRMS: Double          { didSet { d.set(minPeakRMS, forKey: "minPeakRMS") } }
@@ -362,6 +365,7 @@ final class Settings: ObservableObject {
             "cleanupBaseURL": "",
             "customVocabulary": "",
             "soundFeedback": false,
+            "speakReplies": false,
             "lockEnabled": true,
             "vocabEnabled": true,
             "liveTranscription": true,
@@ -394,6 +398,7 @@ final class Settings: ObservableObject {
         cleanupBaseURL   = d.string(forKey: "cleanupBaseURL") ?? ""
         customVocabulary = d.string(forKey: "customVocabulary") ?? ""
         soundFeedback    = d.bool(forKey: "soundFeedback")
+        speakReplies     = d.bool(forKey: "speakReplies")
         historyEnabled   = d.bool(forKey: "historyEnabled")
         historyLimit     = d.integer(forKey: "historyLimit")
         minPeakRMS       = d.double(forKey: "minPeakRMS")
@@ -500,6 +505,7 @@ final class Settings: ObservableObject {
         cleanupBaseURL   = ""
         customVocabulary = ""
         soundFeedback    = false
+        speakReplies     = false
         historyEnabled   = true
         historyLimit     = 500
         minPeakRMS       = Double(Config.defaultMinPeakRMS)

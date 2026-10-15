@@ -15,6 +15,15 @@
     <!-- Menu-bar only: no Dock icon, no app switcher entry. -->
     <key>LSUIElement</key>             <true/>
 
+    <!-- yapperroni://speak?text=… and yapperroni://stop, sent by Claude Code hooks. -->
+    <key>CFBundleURLTypes</key>
+    <array>
+        <dict>
+            <key>CFBundleURLName</key>     <string>com.rahuldesai.yapperroni</string>
+            <key>CFBundleURLSchemes</key>  <array><string>yapperroni</string></array>
+        </dict>
+    </array>
+
     <key>NSMicrophoneUsageDescription</key>
     <string>Yapperroni records your voice while you hold the dictation key and transcribes it on this Mac.</string>
     <key>NSAudioCaptureUsageDescription</key>
