@@ -775,7 +775,7 @@ func selftestModes() -> Never {
     check("an older saved mode decodes", decoded?.count == 1)
     check("its own fields survive", decoded?.first?.name == "Saved by 1.2"
           && decoded?.first?.binding == RecordingMode.room.binding)
-    check("missing fields take the defaults", decoded?.first?.language == "auto"
+    check("missing fields take the defaults", decoded?.first?.language == "en"
           && decoded?.first?.vad == false && decoded?.first?.input == .microphone)
     check("mic fields default for an older mode", decoded?.first?.micDevice == InputDevice.systemDefault
           && decoded?.first?.maxMicGain == false)

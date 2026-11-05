@@ -38,7 +38,11 @@ enum Engines {
         let n = name.lowercased()
         if n.contains("parakeet") { return "Parakeet TDT 0.6B v3 (sherpa-onnx)" }
         if n.contains("canary") { return "Canary 180M Flash (sherpa-onnx)" }
-        if n.contains("large-v3-turbo") { return "Whisper large-v3-turbo" }
+        // Several turbo builds can sit in the folder; identical names made the
+        // picker look like nothing was chosen.
+        if n.contains("yapperroni-turbo") { return "Yapperroni fine-tuned turbo (test, less accurate)" }
+        if n.contains("large-v3-turbo") { return n.contains("q8") ? "Whisper large-v3-turbo, 8-bit" : "Whisper large-v3-turbo (recommended)" }
+        if n.contains("large-v3") { return "Whisper large-v3 (full, slow)" }
         if n.contains("small.en") { return "Whisper small.en" }
         return name
     }

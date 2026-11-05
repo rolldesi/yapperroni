@@ -5,11 +5,14 @@ import Foundation
 enum Config {
     static let sampleRate: Double = 16_000
 
-    static let defaultModelFilename = "ggml-small.en-q5_1.bin"
-    /// What a new recording mode starts on. Not bundled —
-    /// `YAPPERRONI_FETCH_MODELS=1 ./build.sh` fetches it into the support
-    /// folder; a mode naming a missing model falls back to the dictation model.
-    static let accurateModelFilename = "ggml-large-v3-turbo-q5_0.bin"
+    /// Shipped inside the app: what a missing model falls back to.
+    static let bundledModelFilename = "ggml-small.en-q5_1.bin"
+    /// The default for every mode. Best of eight local options on three MIT
+    /// lectures (8.6% word error, small.en 10.6%), and on 26 more lectures
+    /// beat our own fine-tuned turbo, 13.4% against 17.5% (7 Oct). Not
+    /// bundled — `YAPPERRONI_FETCH_MODELS=1 ./build.sh` fetches it into the
+    /// support folder; without it the bundled model is used.
+    static let defaultModelFilename = "ggml-large-v3-turbo-q5_0.bin"
     /// Gate on the loudest 100 ms window, not the whole-clip average.
     /// Reference points: speaking into the built-in mic measures 0.05–0.2;
     /// the same audio arriving across a room via speakers measured 0.0094.

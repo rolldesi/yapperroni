@@ -4,7 +4,8 @@ Hold-to-talk dictation for macOS. Hold **Right ⌥**, speak, release — the tex
 lands at your caret in whatever app you were in. Or press **⌥Space** to record
 hands-free and press it again to stop.
 
-Local Whisper (`small.en`, q5_1, 181 MB) via whisper.cpp with Metal. No API
+Local Whisper (large-v3-turbo by default; `small.en` is bundled as the fallback)
+via whisper.cpp with Metal and the Neural Engine. No API
 keys, no account, no network. Transcription only — no autocorrect, no LLM
 rewriting, no "AI features". It types what you said.
 
@@ -135,8 +136,8 @@ to record. Only the transcript is kept, never the audio.
 
 | Model | Engine | Size | Notes |
 |---|---|---|---|
-| Whisper small.en | whisper.cpp, Metal | 181 MB | Bundled. Fastest to load. English only. |
-| Whisper large-v3-turbo | whisper.cpp, Metal | 574 MB | Most accurate here, especially with the vocabulary list filled in. |
+| Whisper large-v3-turbo | whisper.cpp, Metal + Neural Engine | 574 MB | The default for every mode. Most accurate here: 8.6% on three MIT lectures, 13.4% on 26 more. |
+| Whisper small.en | whisper.cpp, Metal | 181 MB | Bundled; used when turbo is missing. Fastest to load. English only. |
 | Parakeet TDT 0.6B v3 | sherpa-onnx, CPU | 643 MB | Fast, punctuated. Ignores the vocabulary list. |
 | Canary 180M Flash | sherpa-onnx, CPU | 210 MB | Smallest. Ignores the vocabulary list. |
 

@@ -104,8 +104,11 @@ struct RecordingMode: Codable, Equatable, Identifiable {
     /// End by itself after `Config.maxSilenceSeconds` of quiet. Off for a
     /// lecture: a lecturer pausing at the board is not the end.
     var stopOnSilence: Bool
-    /// A code from `Languages.all`. English-only models ignore it.
-    var language = "auto"
+    /// A code from `Languages.all`. English-only models ignore it. English
+    /// unless the user picks otherwise: auto-detect decides from the first
+    /// 30 s, and live from each stretch, so accented English can come out
+    /// as French text.
+    var language = "en"
     /// Silero voice-activity detection before whisper: silence is cut out
     /// instead of decoded, which is where whisper invents its sentences.
     /// Off by default: on a quiet, muffled lecture it judged the lecturer to
@@ -130,7 +133,7 @@ struct RecordingMode: Codable, Equatable, Identifiable {
         name: "Room",
         binding: KeyBinding(keyCode: 37, deviceMask: 0,
                             modifierFlags: CGEventFlags.maskAlternate.rawValue, kind: .combo),
-        modelFilename: Config.accurateModelFilename,
+        modelFilename: Config.defaultModelFilename,
         voiceIsolation: false, live: false, output: .copy,
         accurate: false, maxMinutes: 180, stopOnSilence: false,
         micDevice: InputDevice.builtInMic, maxMicGain: true)
@@ -141,7 +144,7 @@ struct RecordingMode: Codable, Equatable, Identifiable {
         name: "Call",
         binding: KeyBinding(keyCode: 31, deviceMask: 0,
                             modifierFlags: CGEventFlags.maskAlternate.rawValue, kind: .combo),
-        modelFilename: Config.accurateModelFilename,
+        modelFilename: Config.defaultModelFilename,
         voiceIsolation: false, live: false, output: .copy,
         accurate: false, maxMinutes: 180, stopOnSilence: false,
         input: .system)
@@ -164,7 +167,7 @@ struct RecordingMode: Codable, Equatable, Identifiable {
     init(name: String, binding: KeyBinding, modelFilename: String,
          voiceIsolation: Bool, live: Bool, output: OutputMode,
          accurate: Bool, maxMinutes: Double, stopOnSilence: Bool,
-         language: String = "auto", vad: Bool = false, input: AudioInput = .microphone,
+         language: String = "en", vad: Bool = false, input: AudioInput = .microphone,
          micDevice: String = InputDevice.systemDefault, maxMicGain: Bool = false) {
         self.name = name; self.binding = binding; self.modelFilename = modelFilename
         self.voiceIsolation = voiceIsolation; self.live = live; self.output = output
@@ -194,7 +197,7 @@ struct RecordingMode: Codable, Equatable, Identifiable {
         accurate       = try c.decode(Bool.self, forKey: .accurate)
         maxMinutes     = try c.decode(Double.self, forKey: .maxMinutes)
         stopOnSilence  = try c.decode(Bool.self, forKey: .stopOnSilence)
-        language       = try c.decodeIfPresent(String.self, forKey: .language) ?? "auto"
+        language       = try c.decodeIfPresent(String.self, forKey: .language) ?? "en"
         vad            = try c.decodeIfPresent(Bool.self, forKey: .vad) ?? false
         input          = try c.decodeIfPresent(AudioInput.self, forKey: .input) ?? .microphone
         micDevice      = try c.decodeIfPresent(String.self, forKey: .micDevice) ?? InputDevice.systemDefault
@@ -461,8 +464,9 @@ final class Settings: ObservableObject {
     func reconcileModelSelection() {
         let available = availableModels
         guard !available.isEmpty, !available.contains(modelFilename) else { return }
-        Log.write("model   \(modelFilename) missing; falling back to \(available[0])")
-        modelFilename = available[0]
+        let fallback = available.contains(Config.bundledModelFilename) ? Config.bundledModelFilename : available[0]
+        Log.write("model   \(modelFilename) missing; falling back to \(fallback)")
+        modelFilename = fallback
     }
 
     // Launch-at-login lives in SMAppService, not UserDefaults; it is system state.
