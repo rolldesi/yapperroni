@@ -2,10 +2,11 @@ import Foundation
 
 /// Live transcription: words appear while you are still talking.
 ///
-/// Whisper is not a streaming model, but re-transcribing the whole buffer is
+/// Whisper is not a streaming model, but re-transcribing a short buffer is
 /// cheap — the encoder runs on the mel frames that exist, so a 2 s clip and an
-/// 11 s clip both cost roughly 200 ms. So every tick we transcribe everything
-/// recorded so far and emit whatever new words have settled.
+/// 11 s clip both cost roughly 200 ms. So every tick we transcribe the audio
+/// that is not yet closed (at most `windowSeconds`) and emit whatever new
+/// words have settled.
 ///
 /// "Settled" matters: whisper freely rewrites the tail of its output as more
 /// audio arrives ("i scream" becoming "ice cream"). Typed characters cannot be
@@ -19,6 +20,15 @@ final class StreamingTranscriber {
     static let interval: TimeInterval = 0.45
     /// Trailing words held back as still-unstable, even when two passes agree.
     static let tailGuard = 2
+    /// The most audio one pass reads. A pass over the whole recording grows
+    /// with it — turbo on an M5 took 0.7 s for 15 s of audio, 2.4 s for a
+    /// minute and 10.4 s for five — so a lecture fell further behind every
+    /// minute. Once the unfinished audio passes this, its first part is closed
+    /// at a pause, typed in full and never read again, and each pass stays
+    /// under ~1.5 s however long the recording runs.
+    static let windowSeconds: Double = 24
+    /// How far back from the window's end to look for the pause to cut at.
+    static let cutSearchSeconds: Double = 8
 
     private let whisper: Transcriber
     private let options: DecodeOptions
@@ -27,6 +37,14 @@ final class StreamingTranscriber {
 
     private var previous: [String] = []
     private var emitted: [String] = []
+    /// Samples before this are closed: typed, and never transcribed again.
+    private var offset = 0
+    /// Words typed from the audio after `offset`. Agreement and the final
+    /// alignment work on these; `emitted` is the whole session.
+    private var pending: [String] = []
+    /// The last words typed when a stretch closed, until the next stretch
+    /// types its first. See `overlap`.
+    private var closedTail: [String] = []
     private var runningLock = NSLock()
     private var _running = false
     /// Read on the streaming queue, written from whichever thread stops it.
@@ -61,6 +79,9 @@ final class StreamingTranscriber {
         running = true
         previous = []
         emitted = []
+        pending = []
+        closedTail = []
+        offset = 0
         queue.async { [weak self] in
             while self?.running == true {
                 let pcm = sample()
@@ -89,21 +110,57 @@ final class StreamingTranscriber {
         // interleave with it and emit the same words twice.
         queue.sync {}
 
-        let final = StreamingTranscriber.words(whisper.transcribe(pcm, options: options))
+        let rest = Array(pcm[min(offset, pcm.count)...])
+        // After a cut the rest can be a breath, and whisper makes "Thank you."
+        // out of a breath. Before any cut, the caller's own gate has run.
+        if offset == 0 || (Double(rest.count) / Config.sampleRate >= 0.6
+                           && Double(Recorder.peakRMS(rest)) >= Settings.shared.minPeakRMS) {
+            owe(StreamingTranscriber.words(whisper.transcribe(rest, options: options)))
+        }
+        return emittedText
+    }
 
-        if let tail = StreamingTranscriber.tailAfter(emitted: emitted, final: final) {
+    /// Closes the stretch up to a cut with one more pass over just that audio.
+    /// Live passes read past the cut, so the words typed so far can end
+    /// either inside this stretch (type what it still owes) or after it (the
+    /// overhang is already typed and becomes the next stretch's start). The
+    /// first version only handled the first case: every overhang was typed
+    /// twice, and a 5-minute lecture came out at 16% word error against 2%.
+    private func close(_ chunk: [Float]) {
+        let final = StreamingTranscriber.words(whisper.transcribe(chunk, options: options))
+        if let tail = StreamingTranscriber.tailAfter(emitted: pending, final: final) {
+            emit(tail)
+            pending = []
+            closedTail = Array(emitted.suffix(3))
+        } else if let overhang = StreamingTranscriber.tailAfter(emitted: final, final: pending) {
+            pending = overhang
+        } else {
+            // Count instead, as `owe` does: dropping the stretch's untyped
+            // words would lose speech the user said.
+            Log.write("stream  cut alignment FAILED (closed=\(final.count) typed=\(pending.count))")
+            if final.count > pending.count { emit(Array(final[pending.count...])) }
+            pending = []
+            closedTail = Array(emitted.suffix(3))
+        }
+        previous = []
+    }
+
+    /// Types whatever of `final`, a full pass over the audio after `offset`,
+    /// has not been typed yet.
+    private func owe(_ final: [String]) {
+        if pending.isEmpty { pending = takeOverlap(final) }
+        if let tail = StreamingTranscriber.tailAfter(emitted: pending, final: final) {
             emit(tail)
         } else {
             // Alignment failed: the final pass segmented the speech differently
             // than every incremental pass did. Fall back to counting, which is
             // what this did before, and record it — a run of these means the
             // alignment window needs widening.
-            Log.write("stream  tail alignment FAILED (final=\(final.count) emitted=\(emitted.count))")
-            if final.count > emitted.count {
-                emit(Array(final[emitted.count...]))
+            Log.write("stream  tail alignment FAILED (final=\(final.count) emitted=\(pending.count))")
+            if final.count > pending.count {
+                emit(Array(final[pending.count...]))
             }
         }
-        return emittedText
     }
 
     /// The part of the final transcript that has not been typed yet.
@@ -149,7 +206,16 @@ final class StreamingTranscriber {
     // MARK: - One pass
 
     private func tick(_ pcm: [Float]) {
-        let text = whisper.transcribe(pcm, options: options)
+        let maxLen = Int(StreamingTranscriber.windowSeconds * Config.sampleRate)
+        if pcm.count - offset > maxLen,
+           let cut = SherpaEngine.cutPoints(Array(pcm[offset...]), maxLen: maxLen,
+                                            search: Int(StreamingTranscriber.cutSearchSeconds * Config.sampleRate),
+                                            window: Int(Config.sampleRate / 10)).first {
+            close(Array(pcm[offset..<(offset + cut)]))
+            offset += cut
+            return
+        }
+        let text = whisper.transcribe(Array(pcm[offset...]), options: options)
         guard running else { return }
         let now = StreamingTranscriber.words(text)
         guard !now.isEmpty else { return }
@@ -167,8 +233,42 @@ final class StreamingTranscriber {
         previous = now
 
         let commitTo = min(stable, max(0, now.count - StreamingTranscriber.tailGuard))
-        guard commitTo > emitted.count else { return }
-        emit(Array(now[emitted.count..<commitTo]))
+        if pending.isEmpty, commitTo > 0 { pending = takeOverlap(now) }
+        guard commitTo > pending.count else { return }
+        // The typed words usually open this pass word for word, and the new
+        // ones start at pending.count. When whisper has re-split text it gave
+        // before, one dropped word shifts every index after it — committing by
+        // index typed "together, together" in a 5-minute lecture — so find
+        // where the typed words end instead. Only then: anchoring every commit
+        // stalled whole stretches whenever a typed word was reworded (10%
+        // word error against 3%), so counting stays the fallback.
+        if now.prefix(pending.count).map(StreamingTranscriber.normalize) != pending.map(StreamingTranscriber.normalize),
+           let fresh = StreamingTranscriber.tailAfter(emitted: pending, final: Array(now[..<commitTo])) {
+            emit(fresh)
+            return
+        }
+        emit(Array(now[pending.count..<commitTo]))
+    }
+
+    /// The words at the start of a new stretch that the last one already
+    /// typed, counted as typed. Consumes `closedTail`.
+    private func takeOverlap(_ now: [String]) -> [String] {
+        defer { closedTail = [] }
+        return StreamingTranscriber.overlap(closedTail, now)
+    }
+
+    /// The longest start of `next`, up to three words, that repeats the end
+    /// of `closed`. A cut can land inside a word, and then both stretches
+    /// hear it: the 5-minute lecture came out with "look at and and take" and
+    /// "important for for function". A speaker who really says "for for"
+    /// loses one, as MIT's captions and a single whisper pass both do.
+    /// Static and pure so it can be tested directly — see `--selftest-align`.
+    static func overlap(_ closed: [String], _ next: [String]) -> [String] {
+        for k in stride(from: min(3, closed.count, next.count), through: 1, by: -1)
+        where closed.suffix(k).map(normalize) == next.prefix(k).map(normalize) {
+            return Array(next.prefix(k))
+        }
+        return []
     }
 
     private func emit(_ newWords: [String]) {
@@ -177,6 +277,7 @@ final class StreamingTranscriber {
         // run together and the utterance does not start with a stray space.
         let chunk = (emitted.isEmpty ? "" : " ") + newWords.joined(separator: " ")
         emitted.append(contentsOf: newWords)
+        pending.append(contentsOf: newWords)
         // Capture the callback, not self. `finish()` emits the last chunk and
         // then returns, at which point the caller drops its reference — a
         // `[weak self]` here resolves to nil before the main queue drains and

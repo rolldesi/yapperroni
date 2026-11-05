@@ -422,9 +422,9 @@ func selftestToggle() -> Never {
 /// Feeds a known clip through the live transcriber in simulated real time and
 /// prints each emission as it settles. Exercises the prefix-commitment logic
 /// without needing anyone to speak.
-func selftestStreaming(_ wav: String) -> Never {
+func selftestStreaming(_ wav: String, model: String? = nil) -> Never {
     guard let pcm = loadWav(wav) else { print("FAIL: could not read \(wav)"); exit(1) }
-    guard let w = Whisper(modelPath: Settings.shared.modelPath) else {
+    guard let w = Whisper(modelPath: model.map { Settings.shared.modelPath(for: $0) } ?? Settings.shared.modelPath) else {
         print("FAIL: whisper init"); exit(1)
     }
     let total = Double(pcm.count) / Config.sampleRate
@@ -455,7 +455,11 @@ func selftestStreaming(_ wav: String) -> Never {
     while Date().timeIntervalSince(start) < total {
         RunLoop.current.run(until: Date().addingTimeInterval(0.05))
     }
+    let ended = Date()
     let text = live.finish(pcm)
+    // How far behind live is when the speaker stops: the last pass only reads
+    // the audio after the last cut, so this should not grow with the clip.
+    print(String(format: "\nfinal pass after the audio ended: %.2fs", Date().timeIntervalSince(ended)))
     RunLoop.current.run(until: Date().addingTimeInterval(0.3))
     w.close()
 
@@ -492,6 +496,17 @@ func selftestAlign() -> Never {
         print("  \(ok ? "ok  " : "FAIL") \(what)")
         if !ok { print("        got \(got as Any)\n       want \(want as Any)") }
     }
+
+    func overlap(_ what: String, _ closed: [String], _ next: [String], want: Int) {
+        let got = StreamingTranscriber.overlap(closed, next).count
+        if got != want { failures += 1 }
+        print("  \(got == want ? "ok  " : "FAIL") \(what)\(got == want ? "" : " — got \(got), want \(want)")")
+    }
+    overlap("a word on the cut is heard by both stretches", ["look", "at", "and"], ["and", "take", "a"], want: 1)
+    overlap("punctuation and case do not hide the repeat", ["very", "important", "for"], ["For", "function."], want: 1)
+    overlap("two repeated words", ["the", "cell", "membrane"], ["cell", "membrane,", "which"], want: 2)
+    overlap("no repeat, nothing skipped", ["look", "at", "this"], ["and", "take", "a"], want: 0)
+    overlap("nothing closed yet", [], ["and", "take"], want: 0)
 
     check("nothing emitted yet — everything is owed",
           emitted: [], final: ["hello", "there"], want: ["hello", "there"])
@@ -851,8 +866,8 @@ case "--selftest-vocab":
 case "--selftest-retry":
     selftestRetry()
 case "--selftest-streaming":
-    guard args.count > 2 else { print("usage: yapperroni --selftest-streaming <file.wav>"); exit(2) }
-    selftestStreaming(args[2])
+    guard args.count > 2 else { print("usage: yapperroni --selftest-streaming <file.wav> [model]"); exit(2) }
+    selftestStreaming(args[2], model: args.count > 3 ? args[3] : nil)
 case "--selftest-loopback":
     guard args.count > 2 else { print("usage: yapperroni --selftest-loopback <file.wav>"); exit(2) }
     selftestLoopback(args[2], system: args.contains("--system"))

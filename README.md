@@ -405,7 +405,7 @@ $APP --selftest-toggle                                    # hold/toggle state ma
 $APP --selftest-vocab                                     # vocabulary separators, de-duplication, prompt cap
 $APP --selftest-align                                     # live tail alignment, and the loop detector
 $APP --selftest-retry                                     # which cleanup failures are worth retrying
-$APP --selftest-streaming vendor-whisper/samples/jfk.wav  # words emerging in simulated real time
+$APP --selftest-streaming vendor-whisper/samples/jfk.wav [model]  # words emerging in simulated real time
 ```
 
 The strongest one is the acoustic loopback: it plays a known clip through the
