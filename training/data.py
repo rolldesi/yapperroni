@@ -17,6 +17,7 @@ import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
+from pathlib import Path
 
 import numpy as np
 import pyarrow.parquet as pq
@@ -39,8 +40,11 @@ class Source:
     key: tuple[str, ...] = ("audio_id",)
     restore: bool = True
     where: dict = field(default_factory=dict)  # column -> required value
+    local: str = ""  # a folder of parquet files on this machine (ocw.py's output), instead of the Hub
 
     def files(self) -> list[str]:
+        if self.local:
+            return sorted(str(p) for p in (Path(__file__).parent / self.local).glob("*.parquet"))
         from huggingface_hub import HfApi
         tree = HfApi().list_repo_tree(self.repo, path_in_repo=f"{self.config}/{self.split}",
                                       repo_type="dataset", revision="refs/convert/parquet")
@@ -49,6 +53,12 @@ class Source:
 
 
 AMI_KEY = ("meeting_id", "speaker_id", "begin_time", "end_time")
+OCW_KEY = ("lecture", "start")
+
+
+def _ocw(path: str) -> Source:
+    # Built by ocw.py on the training machine; captions are already cased and punctuated.
+    return Source("ocw", "", "", "text", "en", OCW_KEY, restore=False, local=f"data/ocw/{path}")
 
 TRAIN = {
     "ami_ihm": Source("edinburghcstr/ami", "ihm", "train", "text", "en", AMI_KEY),
@@ -61,19 +71,26 @@ TRAIN = {
     # A little French so an English-only mix does not wear away the language
     # detection that made turbo usable on French lectures.
     "vox_fr": Source("facebook/voxpopuli", "fr", "train", "raw_text", "fr", restore=False),
+    "ocw": _ocw("train/clean"),
+    "ocw_muffled": _ocw("train/muffled"),
 }
 # Which source's restored targets a source trains on.
 TARGETS_FROM = {"ami_sdm": "ami_ihm"}
-DEFAULT_MIX = {"ami_sdm": 0.35, "ami_ihm": 0.15, "vox_en": 0.40, "vox_fr": 0.10}
+# Lectures first. The first run's AMI + VoxPopuli mix (0.35 / 0.15 / 0.40 /
+# 0.10) improved meetings and made lectures worse: 8.6% → 11.9% on the MIT
+# benchmark, mostly inserted words and lost sentence ends. VoxPopuli stays a
+# little for accents and French.
+DEFAULT_MIX = {"ocw": 0.55, "ocw_muffled": 0.25, "vox_en": 0.15, "vox_fr": 0.05}
 
 # Never trained on. Fixed before the first step so every checkpoint is
-# scored on the same clips.
+# scored on the same clips. The best checkpoint is the lowest mean, so two of
+# the three are lectures: last time the sets were meetings and calls, and the
+# checkpoint they picked was worse on lectures than no training at all.
 EVAL = {
+    "ocw_lectures": _ocw("eval/clean"),
+    "ocw_lectures_muffled": _ocw("eval/muffled"),
     "vox_french_accent": Source("facebook/voxpopuli", "en_accented", "test", "raw_text", "en",
                                 where={"accent": "en_fr"}, restore=False),
-    "ami_far_field": Source("edinburghcstr/ami", "sdm", "test", "text", "en", AMI_KEY, restore=False),
-    "earnings22_calls": Source("distil-whisper/earnings22", "chunked", "test", "transcription", "en",
-                               ("file_id", "segment_id"), restore=False),
 }
 
 
@@ -184,6 +201,9 @@ class ParquetStream:
     def __init__(self, src: Source, local_files=None, seed: int = 0, shuffle: bool = True, cycle: bool = False):
         self.src, self.seed, self.shuffle, self.cycle = src, seed, shuffle, cycle
         self.paths = list(local_files) if local_files else src.files()
+        if not self.paths:
+            # An empty source would cycle through zero files forever.
+            raise FileNotFoundError(f"no parquet files for {src.local or src.repo} — run ocw.py first?")
         self.columns = list(dict.fromkeys(["audio", src.text, *src.key, *src.where]))
         self.state = {"pass": 0, "file": 0, "group": 0, "row": 0}
 

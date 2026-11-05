@@ -12,7 +12,25 @@ import data  # noqa: E402
 
 out = Path(__file__).resolve().parent / "fixtures"
 out.mkdir(exist_ok=True)
+
+
+def write(name, cols):
+    pq.write_table(pa.table(cols), out / f"{name}.parquet")
+
+
+def lecture_fixtures():
+    """ocw.py's layout, from the AMI rows already written: no download."""
+    if (out / "ocw.parquet").exists():
+        return
+    t = pq.read_table(out / "ami_ihm.parquet")
+    lec = {"audio": t["audio"].to_pylist(), "text": [s.capitalize() + "." for s in t["text"].to_pylist()],
+           "lecture": ["fixture"] * t.num_rows, "start": [float(i) for i in range(t.num_rows)]}
+    for n in ["ocw", "ocw_muffled", "ocw_lectures", "ocw_lectures_muffled"]:
+        write(n, lec)
+
+
 if (out / "done").exists():
+    lecture_fixtures()
     print("fixtures present")
     sys.exit(0)
 
@@ -24,11 +42,6 @@ for r in data.stream(src):
     if len(rows) >= 120:
         break
 audio = [{"bytes": r["audio"]["bytes"], "path": r["audio"].get("path")} for r in rows]
-
-
-def write(name, cols):
-    pq.write_table(pa.table(cols), out / f"{name}.parquet")
-
 
 ami = {"meeting_id": [r["meeting_id"] for r in rows], "audio_id": [r["audio_id"] for r in rows],
        "text": [r["text"] for r in rows], "audio": audio,
@@ -49,5 +62,6 @@ write("ami_far_field", ami)
 write("earnings22_calls", {"file_id": ["f"] * len(rows), "segment_id": [str(i) for i in range(len(rows))],
                            "audio": audio, "transcription": [t.capitalize() + "." for t in ami["text"]]})
 (out / "done").write_text("ok")
+lecture_fixtures()
 print(f"wrote fixtures from {len(rows)} AMI rows")
 import os; os._exit(0)  # noqa: E702 — streaming cleanup can hang shutdown

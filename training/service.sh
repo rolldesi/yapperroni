@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
-# Training as a launchd service on a dedicated Mac: starts at login, restarts
-# if the process dies, checkpoints to the Hugging Face store every hour, live
-# on W&B. Survives the lid closed only with `sudo pmset -a disablesleep 1`.
+# Training as a launchd service on a dedicated Mac: fetches the lecture data
+# (ocw.py, resumable), then trains; starts at login, restarts if the process
+# dies, checkpoints to the Hugging Face store every hour, live on W&B.
+# Survives the lid closed only with `sudo pmset -a disablesleep 1`.
 #
 #   ./service.sh install    # write the LaunchAgent and start it
 #   ./service.sh stop       # stop and remove it (saves first)
@@ -10,7 +11,10 @@ set -euo pipefail
 T="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LABEL=com.yapperroni.training
 PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
-STORE="${STORE:-hf:rolldesi/yapperroni-train}"
+# A store per run: train.py resumes whatever is in it, and the first run's
+# store (yapperroni-train) sits finished at step 2000 — pointed there, a new
+# run would resume, find it is done and exit inside a minute.
+STORE="${STORE:-hf:rolldesi/yapperroni-lectures}"
 
 case "${1:-}" in
 install)
@@ -22,14 +26,8 @@ install)
   <key>Label</key><string>$LABEL</string>
   <key>WorkingDirectory</key><string>$T</string>
   <key>ProgramArguments</key><array>
-    <string>$T/.venv/bin/python</string><string>train.py</string>
-    <string>--store</string><string>$STORE</string>
-    <string>--decoder-only</string><string>--batch</string><string>8</string><string>--accum</string><string>4</string>
-    <string>--max-steps</string><string>${MAX_STEPS:-2000}</string>
-    <string>--max-hours</string><string>100000</string>
-    <string>--save-minutes</string><string>60</string>
-    <string>--eval-every</string><string>250</string><string>--eval-n</string><string>200</string>
-    <string>--wandb</string><string>yapperroni</string>
+    <string>/bin/sh</string><string>-c</string>
+    <string>.venv/bin/python ocw.py --out data/ocw &amp;&amp; exec .venv/bin/python train.py --store $STORE --decoder-only --batch 8 --accum 4 --max-steps ${MAX_STEPS:-2000} --max-hours 100000 --save-minutes 60 --eval-every 250 --eval-n 200 --wandb yapperroni</string>
   </array>
   <key>EnvironmentVariables</key><dict>
     <key>YAPPERRONI_DTYPE</key><string>fp32</string>

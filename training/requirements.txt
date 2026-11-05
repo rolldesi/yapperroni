@@ -12,3 +12,5 @@ soundfile==0.14.0
 scipy==1.18.1
 pyarrow==25.0.1
 wandb==0.30.0
+# ocw.py: ffmpeg for the lecture audio when the Mac has none of its own.
+imageio-ffmpeg==0.6.0

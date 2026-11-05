@@ -20,6 +20,7 @@ training/.venv/
 training/.cache/
 training/runs/
 training/wandb/
+training/data/
 training/out/
 training/.venv-export/
 training/smoke/fixtures/

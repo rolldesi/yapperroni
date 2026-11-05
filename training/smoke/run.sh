@@ -14,7 +14,8 @@ $PY smoke/make_fixtures.py | tail -1
 $PY smoke/check_stream.py | tail -1
 F=smoke/fixtures
 L="ami_ihm=$F/ami_ihm.parquet,ami_sdm=$F/ami_sdm.parquet,vox_en=$F/vox_en.parquet,vox_fr=$F/vox_fr.parquet"
-L="$L,vox_french_accent=$F/vox_french_accent.parquet,ami_far_field=$F/ami_far_field.parquet,earnings22_calls=$F/earnings22_calls.parquet"
+L="$L,ocw=$F/ocw.parquet,ocw_muffled=$F/ocw_muffled.parquet"
+L="$L,ocw_lectures=$F/ocw_lectures.parquet,ocw_lectures_muffled=$F/ocw_lectures_muffled.parquet,vox_french_accent=$F/vox_french_accent.parquet"
 S=runs/smoke
 rm -rf "$S"
 quiet() { grep -v -i "warn\|loading weights\|shuffle buffer" || true; }
@@ -28,7 +29,7 @@ echo "== train, then kill -9 after the first timed save"
 # for either.
 ARGS=(--store $S --model openai/whisper-tiny --local "$L" --batch 4 --accum 1 --max-steps 150
       --eval-every 50 --eval-n 8 --save-minutes 0.1 --warmup 5
-      --mix ami_sdm=1,ami_ihm=1,vox_en=1,vox_fr=1)  # even: an epoch ends when the rarest source runs out
+      --mix ami_sdm=1,vox_fr=1,ocw=1,ocw_muffled=1)  # even: an epoch ends when the rarest source runs out
 $PY train.py "${ARGS[@]}" > runs/smoke-1.log 2>&1 &
 PID=$!
 for _ in $(seq 1 150); do grep -q "saved step [1-9][0-9]* (timer)" runs/smoke-1.log && break; sleep 2; done

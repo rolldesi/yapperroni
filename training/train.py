@@ -144,8 +144,14 @@ def main():
     if a.wandb:
         import wandb
         wandb_id = wandb_id or __import__("uuid").uuid4().hex[:12]
-        wb = wandb.init(project=a.wandb, id=wandb_id, resume="allow", config=vars(a),
-                        name=f"turbo-lora-r{a.lora_r}")
+        try:
+            wb = wandb.init(project=a.wandb, id=wandb_id, resume="allow", config=vars(a),
+                            name=f"turbo-lora-r{a.lora_r}-{a.store.split('/')[-1]}",
+                            settings=wandb.Settings(init_timeout=180))
+        except Exception as e:  # noqa: BLE001
+            # The dashboard is optional; the run is not. On 7 Oct a slow
+            # network timed out wandb.init and took the whole run down with it.
+            print(f"W&B unavailable, training without it: {e!r}"[:300], flush=True)
 
     def log(d: dict):
         if wb:

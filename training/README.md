@@ -63,8 +63,12 @@ plugged in with the lid open: closing the lid sleeps the Mac whatever
     ./service.sh status
     ./service.sh stop        # saves, then stops and removes the service
 
-Checkpoints go to `hf:rolldesi/yapperroni-train` hourly, charts to
-wandb.ai/roll-desi/yapperroni. Measured on the M2 (decoder-only, batch 8):
+The service first runs `ocw.py` (about 170 lectures streamed from
+archive.org into `data/ocw`, ~3 GB, resumable), then trains. Checkpoints go
+to `hf:rolldesi/yapperroni-lectures` hourly, charts to
+wandb.ai/roll-desi/yapperroni. The first run (meetings + parliament) is in
+`hf:rolldesi/yapperroni-train`. A new run needs a new `STORE=hf:…`, because
+train.py resumes whatever the store holds. Measured on the M2 (decoder-only, batch 8):
 0.76 clips/s in fp32, 0.80 fp16, 0.52 bf16 — its GPU has no native bf16, so
 the service sets `YAPPERRONI_DTYPE=fp32`. That is ~3.4× slower than the M5,
 hence `MAX_STEPS=2000` by default. Needs `sudo pmset -a disablesleep 1` to
@@ -83,16 +87,26 @@ decoding Yapperroni uses.
 
 ## Data
 
+The second run trains on lectures. The first trained on AMI and VoxPopuli,
+got better on meetings (29.3% → 27.0% on its own test sets) and worse on
+the three MIT lectures (8.6% → 11.9%): about twice turbo's inserted words,
+from AMI's verbatim transcripts, and fewer sentence ends.
+
 | Source | Use | Hours | Licence |
 |---|---|---|---|
-| AMI, far-field (sdm) + headset (ihm) | train | ~100 | CC BY 4.0 |
-| VoxPopuli English | train, on its own (already punctuated) text | ~540 | CC0 |
-| VoxPopuli French | train, 10% of the mix | — | CC0 |
+| MIT OpenCourseWare, 10 courses × 16 lectures (`ocw.py`) | train, clean + every second window muffled | ~130 | CC BY-NC-SA 4.0 |
+| MIT OpenCourseWare 18.650 + 18.S096, 4 lectures each, 10 min | **test only**, clean + muffled | 1.3 | CC BY-NC-SA 4.0 |
+| AMI, far-field (sdm) + headset (ihm) | first run only | ~100 | CC BY 4.0 |
+| VoxPopuli English | train, 15% of the mix, on its own (already punctuated) text | ~540 | CC0 |
+| VoxPopuli French | train, 5% of the mix | — | CC0 |
 | VoxPopuli accented, French speakers | **test only** | 2.6 | CC0 |
-| AMI far-field test split | **test only** | — | CC BY 4.0 |
-| Earnings-22 | **test only** | — | CC BY-SA 4.0 |
+| AMI far-field test split, Earnings-22 | first run's tests | — | CC BY 4.0, CC BY-SA 4.0 |
 
-All streamed from the Hugging Face Parquet mirrors; nothing downloads whole.
+The benchmark lectures' courses (14.73, 7.016, 18.06) are never trained on,
+and the OCW test courses share no lecturer with the training ones. OCW is
+non-commercial: a model trained on it is fine for personal use, not for a
+paid release. The Hugging Face sources stream from Parquet mirrors and
+nothing downloads whole.
 Only public data is used. Your own recordings need participants' consent that
 covers cloud processing, and belong in a separate, deliberate step.
 
@@ -140,6 +154,7 @@ on a single clip is noise; look for it across all three classes.
 |---|---|
 | `text.py` | scoring normalizer, WER, punctuation stats, `restore_style` (`python text.py` self-checks) |
 | `data.py` | sources, streaming, audio decoding, the mix, eval sets |
+| `ocw.py` | MIT lectures + captions → ≤30 s windows, clean and muffled, as local parquet |
 | `model.py` | turbo + LoRA, labels with per-row language prefix, batched transcription |
 | `store.py` | local folder or private HF repo |
 | `prepare.py` / `train.py` | the two steps |
