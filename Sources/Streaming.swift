@@ -73,8 +73,11 @@ final class StreamingTranscriber {
 
     // MARK: - Lifecycle
 
-    /// Starts ticking. `sample` is asked for the audio recorded so far.
-    func start(sample: @escaping () -> [Float]) {
+    /// Starts ticking. `sample` is asked for the audio recorded from a given
+    /// sample on, and only ever for the stretch that is not closed yet: the
+    /// whole recording, copied and measured on every pass, was most of a
+    /// second of work per pass an hour into a lecture.
+    func start(sample: @escaping (Int) -> [Float]) {
         guard !running else { return }
         running = true
         previous = []
@@ -84,15 +87,34 @@ final class StreamingTranscriber {
         offset = 0
         queue.async { [weak self] in
             while self?.running == true {
-                let pcm = sample()
                 guard let self, self.running else { return }
-                if Double(pcm.count) / Config.sampleRate >= 0.6,
-                   Double(Recorder.peakRMS(pcm)) >= Settings.shared.minPeakRMS {
-                    self.tick(pcm)
+                let pcm = sample(self.offset)
+                // Gated on this stretch, not the recording: once anyone had
+                // spoken, a gate on the whole of it let every silence after
+                // through to whisper, which makes sentences out of silence.
+                if Double(pcm.count) / Config.sampleRate >= 0.6 {
+                    if Double(Recorder.peakRMS(pcm)) >= Settings.shared.minPeakRMS {
+                        // A stretch was just closed and the next one is
+                        // already waiting: sleeping first is pure added lag.
+                        if self.tick(pcm) { continue }
+                    } else if Double(pcm.count) / Config.sampleRate > StreamingTranscriber.windowSeconds {
+                        self.skipQuiet(pcm.count)
+                    }
                 }
                 _ = self.wake.wait(timeout: .now() + StreamingTranscriber.interval)
             }
         }
+    }
+
+    /// A stretch this long with nothing in it — the break in a lecture, a
+    /// call on hold — is closed unheard, keeping its last second in case a
+    /// word is starting there. Without this it grew until someone spoke, and
+    /// was then read 24 s at a time before the live text caught up.
+    private func skipQuiet(_ count: Int) {
+        offset += count - Int(Config.sampleRate)
+        previous = []
+        pending = []
+        closedTail = Array(emitted.suffix(3))
     }
 
     /// Stops the loop without waiting. Call before clearing the recorder, so a
@@ -127,7 +149,11 @@ final class StreamingTranscriber {
     /// first version only handled the first case: every overhang was typed
     /// twice, and a 5-minute lecture came out at 16% word error against 2%.
     private func close(_ chunk: [Float]) {
-        let final = StreamingTranscriber.words(whisper.transcribe(chunk, options: options))
+        // A cut can leave a stretch that is all pause — twenty quiet seconds
+        // and then the sentence that made the stretch too long. Nothing to
+        // transcribe there, and whisper would invent something.
+        let heard = Double(Recorder.peakRMS(chunk)) >= Settings.shared.minPeakRMS
+        let final = heard ? StreamingTranscriber.words(whisper.transcribe(chunk, options: options)) : []
         if let tail = StreamingTranscriber.tailAfter(emitted: pending, final: final) {
             emit(tail)
             pending = []
@@ -205,23 +231,30 @@ final class StreamingTranscriber {
 
     // MARK: - One pass
 
-    private func tick(_ pcm: [Float]) {
+    /// One pass over `pcm`, the audio after `offset`. True when it closed a
+    /// stretch instead of transcribing, so the caller goes straight on.
+    private func tick(_ pcm: [Float]) -> Bool {
         let maxLen = Int(StreamingTranscriber.windowSeconds * Config.sampleRate)
-        if pcm.count - offset > maxLen,
-           let cut = SherpaEngine.cutPoints(Array(pcm[offset...]), maxLen: maxLen,
+        if pcm.count > maxLen,
+           let cut = SherpaEngine.cutPoints(pcm, maxLen: maxLen,
                                             search: Int(StreamingTranscriber.cutSearchSeconds * Config.sampleRate),
                                             window: Int(Config.sampleRate / 10)).first {
-            close(Array(pcm[offset..<(offset + cut)]))
+            close(Array(pcm[..<cut]))
             offset += cut
-            return
+            return true
         }
-        let text = whisper.transcribe(Array(pcm[offset...]), options: options)
-        guard running else { return }
+        let text = whisper.transcribe(pcm, options: options)
+        guard running else { return false }
         let now = StreamingTranscriber.words(text)
-        guard !now.isEmpty else { return }
+        guard !now.isEmpty else { return false }
 
         let partial = onPartial
         DispatchQueue.main.async { partial(text) }
+        // A looping pass types nothing. A dictation is ended by its loop (the
+        // caller sees it in the partial); an hour-long recording must not be,
+        // so there the loop is left to die with its stretch — unheard, rather
+        // than typed over and over until the cut.
+        guard !StreamingTranscriber.isLooping(now) else { return false }
 
         // Longest prefix on which this pass and the last one agree.
         var stable = 0
@@ -234,7 +267,7 @@ final class StreamingTranscriber {
 
         let commitTo = min(stable, max(0, now.count - StreamingTranscriber.tailGuard))
         if pending.isEmpty, commitTo > 0 { pending = takeOverlap(now) }
-        guard commitTo > pending.count else { return }
+        guard commitTo > pending.count else { return false }
         // The typed words usually open this pass word for word, and the new
         // ones start at pending.count. When whisper has re-split text it gave
         // before, one dropped word shifts every index after it — committing by
@@ -245,9 +278,10 @@ final class StreamingTranscriber {
         if now.prefix(pending.count).map(StreamingTranscriber.normalize) != pending.map(StreamingTranscriber.normalize),
            let fresh = StreamingTranscriber.tailAfter(emitted: pending, final: Array(now[..<commitTo])) {
             emit(fresh)
-            return
+            return false
         }
         emit(Array(now[pending.count..<commitTo]))
+        return false
     }
 
     /// The words at the start of a new stretch that the last one already

@@ -306,12 +306,12 @@ struct SettingsView: View {
                 group("Text") {
                     Toggle("Add a trailing space", isOn: $settings.trailingSpace)
                     Toggle("Copy each transcript to the clipboard", isOn: $settings.copyToClipboard)
-                    hint("For every mode. So you can paste it anywhere, even if no text field was focused. Each mode's own output is under Modes.")
+                    hint("For every mode. So you can paste it anywhere, even if no text field was focused.")
                 }
 
                 group("Models") {
                     HStack {
-                        hint("Each mode picks its model under Modes. Drop whisper `.bin` files or sherpa-onnx model folders into the support folder to add more.")
+                        hint("Picked under Modes → Personal, for every mode. Drop whisper `.bin` files or sherpa-onnx model folders into the support folder to add more.")
                         Spacer()
                         Button("Reveal") {
                             NSWorkspace.shared.selectFile(nil, inFileViewerRootedAtPath: Config.supportDir.path)

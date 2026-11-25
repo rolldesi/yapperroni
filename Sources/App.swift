@@ -7,9 +7,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let hotkey = Hotkey()
     private let recorder = Recorder()
     private let hud = HUD()
-    /// Every model the dictation key or an enabled mode points at, loaded up
-    /// front and keyed by model name. Loading turbo takes seconds, and a press
-    /// that answers "Loading model…" is a press that recorded nothing.
+    /// The model, loaded up front and keyed by its name. Loading turbo takes
+    /// seconds, and a press that answers "Loading model…" is a press that
+    /// recorded nothing. A dictionary because a model change loads the new
+    /// one while a recording may still be finishing on the old.
     private var engines: [String: Transcriber] = [:]
     /// Models being loaded right now, so a settings change mid-load does not
     /// start a second 550 MB load of the same file.
@@ -61,6 +62,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var streamer: StreamingTranscriber?
     /// Serial, so live chunks reach the target app in the order they settled.
     private let typeQueue = DispatchQueue(label: "yapperroni.typing")
+    /// Live words from Room or Call that could not be typed where the
+    /// recording started, and the reason, logged when it changes. See `typeLive`.
+    private var heldWords = ""
+    private var heldWhy: String?
 
     func applicationDidFinishLaunching(_ note: Notification) {
         // After a DMG install, an older copy elsewhere on disk can still be
@@ -116,14 +121,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             .sink { [weak self] _ in self?.refreshMenu() }
             .store(in: &bag)
 
-        settings.$modes
-            .dropFirst()
-            .map { $0.filter(\.enabled).map(\.modelFilename) }
-            .removeDuplicates()
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] _ in self?.loadModel() }
-            .store(in: &bag)
-
         settings.reconcileModelSelection()
 
         if let arg = CommandLine.arguments.first(where: { $0.hasPrefix("--open-window") }) {
@@ -143,7 +140,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 + "lock=\(settings.lockEnabled ? settings.lockBinding.displayName : "off") "
                 + "mode=\(settings.activation.rawValue) "
                 + "model=\(settings.modelPath) "
-                + "modes=[\(settings.modes.map { "\($0.name):\($0.enabled ? $0.binding.displayName : "off"):\($0.modelFilename)" }.joined(separator: ", "))]")
+                + "modes=[\(settings.modes.map { "\($0.name):\($0.enabled ? $0.binding.displayName : "off"):\(Int($0.maxMinutes))min" }.joined(separator: ", "))]")
         if !hotkey.isActive {
             Log.write("launch  TAP DEAD — grant Accessibility, then quit and reopen Yapperroni")
         }
@@ -184,7 +181,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func beginDictation(_ source: Hotkey.Source = .hold) {
         var mode: RecordingMode?
         if case .mode(let i) = source, settings.modes.indices.contains(i) { mode = settings.modes[i] }
-        guard let engine = engine(for: mode?.modelFilename ?? settings.modelFilename) else {
+        guard let engine = engines[settings.modelFilename] else {
             flash("Loading model…", 1.5); hotkey.disengage(); return
         }
         guard !recorder.isRecording else { return }
@@ -208,11 +205,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         targetApp = NSWorkspace.shared.frontmostApplication
         targetAppName = targetApp?.localizedName ?? "?"
 
+        // Room and Call are the dictation recorder with the computer's audio
+        // added. Voice processing is off for them whatever Personal says: it
+        // ducks every other app, and the call being recorded is one of them.
         do {
-            try recorder.start(voiceIsolation: mode?.voiceIsolation ?? settings.voiceIsolation,
-                               input: mode?.input ?? .microphone,
-                               micDevice: mode?.micDevice ?? InputDevice.systemDefault,
-                               maxGain: mode?.maxMicGain ?? false)
+            try recorder.start(voiceIsolation: mode == nil && settings.voiceIsolation,
+                               computerAudio: mode == nil ? nil : .everything)
         } catch {
             Log.write("press   recorder failed: \(error)")
             flash("\(error)", 3); hotkey.disengage(); return
@@ -226,6 +224,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         heardVoice = false
         quietestSecond = .infinity
         handsFree = source != .hold || settings.activation == .toggle
+        heldWords = ""
+        heldWhy = nil
         activeMode = mode
         activeEngine = engine
         let sourceName = mode.map { "mode \"\($0.name)\"" } ?? (source == .lock ? "lock" : "hold")
@@ -233,39 +233,35 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if settings.soundFeedback { NSSound(named: "Tink")?.play() }
 
         hud.show(source == .hold ? .listening : .locked, at: settings.hudPosition)
-        // Room and Call run for an hour with nothing typed, so the pill says
-        // which mode is listening and how to end it.
-        if let mode, !mode.live {
+        // Room and Call run for an hour, so until the first words arrive the
+        // pill says which one is listening and how to end it.
+        if let mode {
             hud.setPartial("\(mode.name) · \(mode.binding.displayName) to stop")
-        }
-        // Worth saying on the pill itself: the dictation model may be
-        // English-only, and a French lecture through it comes out as noise.
-        if let mode, engines[mode.modelFilename] == nil {
-            hud.setPartial(loading.contains(mode.modelFilename)
-                           ? "\(mode.name) model still loading — using the dictation model"
-                           : "\(mode.name) model missing — using the dictation model")
         }
 
         // Live mode types words as they settle. It must own the whole
         // utterance: batch would paste the same text again at the end.
-        if mode?.live ?? settings.liveTranscription, !settings.cleanupEnabled {
+        if settings.liveTranscription, !settings.cleanupEnabled {
+            let home = mode == nil ? nil : targetApp
+            // A loop ends a session that would have ended on silence anyway.
+            // It must not end a lecture: whisper loops on every long pause,
+            // and the rest of the hour would go unrecorded.
+            let loopEnds = mode?.stopOnSilence ?? true
             let s = StreamingTranscriber(
                 whisper: engine,
-                options: decodeOptions(mode),
-                onEmit: { [weak self] chunk in
-                    self?.typeQueue.async { Injector.typeOut(chunk) }
-                },
+                options: DecodeOptions(language: settings.language),
+                onEmit: { [weak self] chunk in self?.typeLive(chunk, home: home) },
                 onPartial: { [weak self] text in
                     guard let self, self.recorder.isRecording else { return }
                     self.hud.setPartial(text)
                     // Words already typed cannot be retracted, but a loop that
                     // is left running keeps typing the same clause forever.
-                    if StreamingTranscriber.isLooping(StreamingTranscriber.words(text)) {
+                    if loopEnds, StreamingTranscriber.isLooping(StreamingTranscriber.words(text)) {
                         self.autoStop("transcript looping")
                     }
                 })
             streamer = s
-            s.start(sample: { [weak self] in self?.recorder.snapshot() ?? [] })
+            s.start(sample: { [weak self] from in self?.recorder.snapshot(from: from) ?? [] })
         }
 
         levelTimer = Timer.scheduledTimer(withTimeInterval: 1.0 / 30, repeats: true) { [weak self] _ in
@@ -333,9 +329,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // A lecture's history row says "Lecture", not whichever app happened
         // to be in front when it started.
         let appName = activeMode?.name ?? targetAppName
-        let output = activeMode?.output ?? settings.output
-        let options = decodeOptions(activeMode)
-        let fromSystem = activeMode?.input == .system
+        let long = activeMode != nil
+        // A long recording that was not typed live goes to the clipboard, as
+        // Room and Call always did: pasting would pull the app it started in
+        // to the front an hour later, over whatever is being done by then.
+        let output = long ? OutputMode.copy : settings.output
+        let options = DecodeOptions(language: settings.language)
+        let home = long ? targetApp : nil
         let engine = activeEngine
         activeMode = nil
         activeEngine = nil
@@ -352,17 +352,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                              quietestSecond, settings.autoStopRMS))
         }
 
-        if let live = streamer {
-            streamer = nil
-            finishLive(live, pcm: pcm, seconds: seconds, appName: appName)
-            return
+        if long {
+            // Which half of a meeting was heard. A denied System Audio
+            // Recording grant is not an error: the tap runs and delivers exact
+            // zeros — but so does a lecture hall where the Mac plays nothing,
+            // so it is logged, not flashed.
+            Log.write(String(format: "        mic peak %.5f heard to %.0fs, computer audio peak %.5f heard to %.0fs%@",
+                             recorder.micPeak, recorder.micSeconds,
+                             recorder.systemPeak, recorder.systemSeconds,
+                             recorder.systemPeak == 0
+                                 ? " — nothing was playing, or System Audio Recording is not allowed" : ""))
         }
 
-        // A denied System Audio Recording grant is not an error: the tap runs
-        // and delivers exact zeros. Nothing real is that quiet.
-        if fromSystem, peak == 0 {
-            Log.write("        computer audio was digital silence — permission denied, or nothing playing")
-            flash("Computer audio was silent — allow System Audio Recording in Privacy & Security", 4)
+        if let live = streamer {
+            streamer = nil
+            finishLive(live, pcm: pcm, seconds: seconds, appName: appName, home: home)
             return
         }
 
@@ -449,8 +453,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Final pass for a live utterance: emits whatever the incremental passes
     /// held back, then records it. The gate is not applied here — words are
     /// already in the user's document and cannot be retracted.
-    private func finishLive(_ live: StreamingTranscriber,
-                            pcm: [Float], seconds: Double, appName: String) {
+    private func finishLive(_ live: StreamingTranscriber, pcm: [Float], seconds: Double,
+                            appName: String, home: NSRunningApplication?) {
         hud.show(.transcribing, at: settings.hudPosition)
         isTranscribing = true
         let t0 = Date()
@@ -469,21 +473,65 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     self.hud.hide(after: 1.2)
                     return
                 }
-                if self.settings.trailingSpace {
-                    self.typeQueue.async { Injector.typeOut(" ") }
-                }
-                if self.settings.copyToClipboard {
+                // One last chance to type what was held, if its app is back.
+                // Words still held after that were never typed anywhere, and
+                // the clipboard is then where they go, whatever the setting.
+                self.typeLive("", home: home)
+                let untyped = !self.heldWords.isEmpty
+                if !untyped, self.settings.trailingSpace { self.typeLive(" ", home: home) }
+                let why = self.heldWhy ?? "nowhere to type"
+                self.heldWords = ""
+                self.heldWhy = nil
+                if self.settings.copyToClipboard || untyped {
                     Injector.setClipboard(text)
                 }
                 self.history.add(Utterance(date: Date(), text: text, duration: seconds,
                                            latency: elapsed, appName: appName))
                 self.wordCount += text.split(separator: " ").count
-                self.hud.show(.message("\(text.split(separator: " ").count) words"),
+                let words = "\(text.split(separator: " ").count) words"
+                self.hud.show(.message(untyped ? "\(words) copied — \(why)" : words),
                               at: self.settings.hudPosition)
-                self.hud.hide(after: 1.0)
+                self.hud.hide(after: untyped ? 3.0 : 1.0)
                 self.refreshMenu()
             }
         }
+    }
+
+    /// Types live words at the caret — for Room and Call, only into a text
+    /// field of `home`, the app the recording started in.
+    ///
+    /// Dictation types wherever the caret is; the user is looking at it. An
+    /// hour-long recording runs while they do other things, and its words
+    /// would land in whatever has focus by then: the meeting's own chat box,
+    /// or a page with a video on it, where keys are commands. So they wait,
+    /// and are typed in one go when the caret is back where it started.
+    private func typeLive(_ chunk: String, home: NSRunningApplication?) {
+        if let home, let why = liveBlocked(home) {
+            if why != heldWhy { Log.write("live    holding words — \(why)") }
+            heldWhy = why
+            heldWords += chunk
+            return
+        }
+        if heldWhy != nil { Log.write("live    typing again, \(heldWords.count) characters held") }
+        heldWhy = nil
+        let text = heldWords + chunk
+        heldWords = ""
+        typeQueue.async { Injector.typeOut(text) }
+    }
+
+    /// Why a long recording's words cannot be typed right now; nil if they can.
+    /// ponytail: goes by the focused element's accessibility role. Electron
+    /// apps (Obsidian, Slack, Cursor) expose none until asked, so nothing is
+    /// typed live into them from Room or Call — the transcript is copied at
+    /// the end instead. Set AXManualAccessibility on `home` if that bites.
+    private func liveBlocked(_ home: NSRunningApplication) -> String? {
+        guard NSWorkspace.shared.frontmostApplication?.processIdentifier == home.processIdentifier else {
+            return "\(home.localizedName ?? "the app it started in") is not in front"
+        }
+        // Asked of `home` itself: the system-wide element answered nothing
+        // for some apps that answer for themselves.
+        let role = Injector.focusedRole(in: AXUIElementCreateApplication(home.processIdentifier))
+        return Injector.textRoles.contains(role ?? "") ? nil : "no text field in focus (\(role ?? "none"))"
     }
 
     /// Types or pastes the finished text and records it.
@@ -537,32 +585,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         refreshMenu()
     }
 
-    /// Dictation has no VAD: it is short, gated on loudness already, and live
-    /// mode re-runs it twice a second.
-    private func decodeOptions(_ mode: RecordingMode?) -> DecodeOptions {
-        guard let mode else { return DecodeOptions(language: settings.language) }
-        return DecodeOptions(accurate: mode.accurate, language: mode.language, vad: mode.vad)
-    }
-
-    /// A mode whose model is missing runs on the dictation model instead of
-    /// refusing to record — the words matter more than which model hears them.
-    private func engine(for name: String) -> Transcriber? {
-        if let e = engines[name] { return e }
-        if name != settings.modelFilename, let e = engines[settings.modelFilename] {
-            Log.write("model   \(name) not loaded; using \(settings.modelFilename)")
-            return e
-        }
-        return nil
-    }
-
-    private func neededModels() -> Set<String> {
-        let available = Set(settings.availableModels)
-        var names: Set<String> = [settings.modelFilename]
-        for m in settings.modes where m.enabled && available.contains(m.modelFilename) {
-            names.insert(m.modelFilename)
-        }
-        return names
-    }
+    private func neededModels() -> Set<String> { [settings.modelFilename] }
 
     /// Loads what is needed and not resident, closes what is resident and no
     /// longer needed. Closing waits out any transcription still using the

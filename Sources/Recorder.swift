@@ -1,7 +1,16 @@
 import AVFoundation
 
-/// Captures mic audio — or the computer's own output, see `SystemAudioTap` —
-/// and hands back 16 kHz mono float32.
+/// Captures the microphone and, when asked, the computer's own output (see
+/// `SystemAudioTap`), and hands back one 16 kHz mono float32 recording with
+/// the two summed.
+///
+/// One path for every way of recording. Dictation is the mic alone; Room and
+/// Call add the computer's audio on top of the same mic. They used to have a
+/// capture path each, and each recorded half a meeting: Call heard the far
+/// end but not the user, Room the user but not the far end. Room also pinned
+/// the built-in mic and raised its gain, and with voice processing on that
+/// looped forever on a refused device switch — nothing recorded, and the
+/// Mac's audio output cut in and out for as long as it ran.
 ///
 /// Two traps live here, both of which produce perfect silence rather than an
 /// error:
@@ -16,30 +25,54 @@ final class Recorder {
     /// thrown -10875 (failed initialisation) it fails every later start too,
     /// and the app could not record again until relaunched.
     private var engine = AVAudioEngine()
-    private var converter: AVAudioConverter?
-    private var monoFormat: AVAudioFormat?
+
+    /// One source on its way into the mix.
+    private final class Lane {
+        var converter: AVAudioConverter?
+        var format: AVAudioFormat?
+        /// Where its next samples go in `samples`. Guarded by `lock`.
+        var cursor = 0
+        var level: Float = 0
+        var peak: Float = 0
+    }
+    private let mic = Lane()
+    private let system = Lane()
+
+    /// The recording so far: every source summed at its own position.
     private var samples: [Float] = []
+    /// When sample 0 was heard, on the uptime clock. Set by the first buffer.
+    private var origin: TimeInterval?
+    /// False outside a recording, so a callback still in flight after `stop`
+    /// cannot write into the next one. Guarded by `lock`.
+    private var accepting = false
     private let lock = NSLock()
     private(set) var isRecording = false
+    private var micArmed = false
 
-    /// Most recent RMS of the 16 kHz output, for the HUD level meter.
-    private(set) var level: Float = 0
-    /// Peak RMS of the raw buffer before conversion. Diagnostic: separates
-    /// "mic gave us silence" from "the conversion ate the audio".
-    private(set) var rawPeak: Float = 0
+    /// Most recent RMS of the 16 kHz output, for the HUD level meter. The
+    /// louder source: two sources overwriting one value made the meter jump
+    /// between the room and the call thirty times a second.
+    var level: Float { max(mic.level, system.level) }
+    /// Peak RMS of each source's raw buffers, before conversion. Diagnostic:
+    /// separates "this source gave us silence" from "the conversion ate the
+    /// audio", and says which half of a meeting was missing.
+    var micPeak: Float { mic.peak }
+    var systemPeak: Float { system.peak }
+    /// How far into the recording each source was last heard. A source that
+    /// died part-way — a mic never rebuilt after a call app took it — stops
+    /// short of the recording's length, which no peak can show.
+    var micSeconds: Double { Double(mic.cursor) / Config.sampleRate }
+    var systemSeconds: Double { Double(system.cursor) / Config.sampleRate }
     private(set) var tapFormat: AVAudioFormat?
     private var releaseWork: DispatchWorkItem?
     private let systemTap = SystemAudioTap()
     private var configObserver: NSObjectProtocol?
 
-    /// How long voice processing stays warm after a dictation ends.
-    ///
-    /// While it is enabled the system is in voice-chat mode and ducks every
-    /// other app — music and video go quiet as if you were on a call. But
-    /// re-enabling it costs 300-500 ms, which would clip the first word of
-    /// every utterance. So it is released on a delay: back-to-back dictations
-    /// keep it warm and start instantly, and audio returns to normal shortly
-    /// after you stop.
+    /// Backstop delay for voice processing release. VP is now disabled
+    /// synchronously in stop(); this grace period only fires if the
+    /// synchronous disable threw. The 300-500 ms re-enable cost on the next
+    /// start() is acceptable to avoid AirPods switching to HFP/SCO between
+    /// dictations.
     private static let voiceProcessingGrace: TimeInterval = 6
 
     static let outputFormat = AVAudioFormat(
@@ -68,53 +101,20 @@ final class Recorder {
             }
     }
 
-    private func rebuildEngine(after error: Error) {
-        replaceEngine("the old one failed (\(error))")
-    }
-
-    /// A device this recording already failed to switch to; not retried.
-    private var pinFailedFor = AudioObjectID(kAudioObjectUnknown)
-
     private func replaceEngine(_ why: String) {
         Log.write("audio   new engine: \(why)")
         engine.stop()
         engine = AVAudioEngine()
-        deviceOverridden = false
         observeEngine()
     }
 
-    /// Points the input at `id` if it is not there already. Setting it posts a
-    /// configuration change; the re-arm that follows finds it in place and
-    /// does nothing, so this settles in one round.
-    private func engageDevice(_ id: AudioObjectID) -> Bool {
-        let input = engine.inputNode
-        if input.isVoiceProcessingEnabled {
-            do { try input.setVoiceProcessingEnabled(false) }
-            catch { Log.write("audio   could not release voice processing: \(error.localizedDescription)") }
-        }
-        guard let unit = input.audioUnit else { return false }
-        var current = AudioObjectID(kAudioObjectUnknown)
-        var size = UInt32(MemoryLayout<AudioObjectID>.size)
-        AudioUnitGetProperty(unit, kAudioOutputUnitProperty_CurrentDevice, kAudioUnitScope_Global, 0, &current, &size)
-        if current == id { deviceOverridden = true; return true }
-        var t = id
-        let s = AudioUnitSetProperty(unit, kAudioOutputUnitProperty_CurrentDevice, kAudioUnitScope_Global, 0,
-                                     &t, UInt32(MemoryLayout<AudioObjectID>.size))
-        if s != noErr {
-            Log.write("audio   could not switch to \"\(InputDevice.name(of: id))\" (\(s))")
-            return false
-        }
-        deviceOverridden = true
-        return true
-    }
-
     /// One retry on a fresh engine, then the error stands.
-    private func armWithRecovery(keepingAudio: Bool) throws {
+    private func armWithRecovery() throws {
         do {
-            try arm(keepingAudio: keepingAudio)
+            try arm()
         } catch {
-            rebuildEngine(after: error)
-            try arm(keepingAudio: keepingAudio)
+            replaceEngine("the old one failed (\(error))")
+            try arm()
         }
     }
 
@@ -139,127 +139,74 @@ final class Recorder {
     /// Held for the whole session so a mid-recording rebuild re-arms the same way.
     private var wantVoiceProcessing = true
 
-    /// Which mic, as a mode's `micDevice` preference; resolved on every arm so
-    /// a dictation after a lecture goes back to the system default.
-    private var wantDevice = InputDevice.systemDefault
-    private var armedDevice = AudioObjectID(kAudioObjectUnknown)
-    /// True while the engine is pinned to a device other than the system
-    /// default, so the next default-device session knows to switch back.
-    private var deviceOverridden = false
-    /// Input gain to put back when the recording ends, if this session raised it.
-    private var restoreGain: (AudioObjectID, Float32)?
-
-    func start(voiceIsolation: Bool, input: AudioInput = .microphone,
-               systemScope: SystemAudioTap.Scope = .everything,
-               micDevice: String = InputDevice.systemDefault, maxGain: Bool = false) throws {
+    /// `computerAudio` adds what the Mac is playing to the recording.
+    /// `microphone: false` leaves the mic out; only the model benchmark wants
+    /// that, to score a clip without the room on top of it.
+    func start(voiceIsolation: Bool, computerAudio: SystemAudioTap.Scope? = nil,
+               microphone: Bool = true) throws {
         guard !isRecording else { return }
-        if input == .system {
-            try armSystem(systemScope)
-            isRecording = true
-            return
-        }
         wantVoiceProcessing = voiceIsolation
-        wantDevice = micDevice
-        pinFailedFor = AudioObjectID(kAudioObjectUnknown)
         releaseWork?.cancel()
         releaseWork = nil
-        // Gain first: changing it posts a device reconfiguration, and after
-        // the tap is live that rebuild costs the first ~0.2 s of the lecture.
-        if maxGain {
-            raiseGain(InputDevice.resolve(micDevice, in: InputDevice.all(),
-                                          default: InputDevice.defaultInput()))
+        lock.lock()
+        samples.removeAll(keepingCapacity: true)
+        origin = nil
+        for lane in [mic, system] { lane.cursor = 0; lane.level = 0; lane.peak = 0 }
+        accepting = true
+        lock.unlock()
+
+        // The mic first. Opening it is what moves Bluetooth headphones to
+        // their call profile, and the computer-audio tap is built on whatever
+        // output format that leaves behind.
+        micArmed = false
+        var micFailure: Error?
+        if microphone {
+            do { try armWithRecovery(); micArmed = true } catch { micFailure = error }
         }
-        try armWithRecovery(keepingAudio: false)
+        // Either source alone is still a recording. Refusing to start because
+        // one is missing would lose the half that could have been heard.
+        if let scope = computerAudio {
+            do { try armSystem(scope) } catch {
+                guard micArmed else { accepting = false; throw error }
+                Log.write("audio   no computer audio, recording the mic alone: \(error)")
+            }
+        }
+        if let micFailure {
+            guard systemTap.isRunning else { accepting = false; throw micFailure }
+            Log.write("audio   no microphone, recording computer audio alone: \(micFailure)")
+        }
         isRecording = true
     }
 
-    /// A far voice arrives near the floor of the mic's range; the system's
-    /// input slider is often left mid-way. Raised for the recording only.
-    private func raiseGain(_ id: AudioObjectID) {
-        guard let old = InputDevice.inputVolume(id) else {
-            Log.write("audio   \"\(InputDevice.name(of: id))\" has no adjustable gain")
-            return
-        }
-        if old < 1, InputDevice.setInputVolume(id, 1) {
-            restoreGain = (id, old)
-            Log.write(String(format: "audio   mic gain %.2f -> 1.00 for this recording", old))
-        }
-    }
-
-    private func restoreGainIfRaised() {
-        guard let (id, old) = restoreGain else { return }
-        restoreGain = nil
-        InputDevice.setInputVolume(id, old)
-        Log.write(String(format: "audio   mic gain restored to %.2f", old))
-    }
-
-    /// Voice processing does not apply: there is no room and no echo to
-    /// remove from a digital mix, and turning it on would duck the very audio
-    /// being recorded.
     private func armSystem(_ scope: SystemAudioTap.Scope) throws {
-        // A dictation just before this leaves voice processing warm for its
-        // grace period, and the delayed release skips while recording — so it
-        // would stay on, ducking the very call being recorded, for the whole
-        // class. Release it now instead.
-        releaseWork?.cancel()
-        releaseWork = nil
-        if engine.inputNode.isVoiceProcessingEnabled {
-            do {
-                try engine.inputNode.setVoiceProcessingEnabled(false)
-                Log.write("audio   released voice processing for a computer-audio recording")
-            } catch {
-                Log.write("audio   could not release voice processing: \(error.localizedDescription)")
-            }
-        }
         let rate = try systemTap.prepare(scope)
         guard let mono = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: rate,
                                        channels: 1, interleaved: false),
               let conv = AVAudioConverter(from: mono, to: Recorder.outputFormat)
         else { systemTap.stop(); throw RecorderError.converterFailed }
-        monoFormat = mono
-        converter = conv
-        rawPeak = 0
-        lock.lock(); samples.removeAll(keepingCapacity: true); lock.unlock()
-        try systemTap.run { [weak self] ptr, n in self?.appendMono(ptr, frames: n) }
+        system.format = mono
+        system.converter = conv
+        try systemTap.run { [weak self] ptr, n in
+            guard let self else { return }
+            self.appendMono(ptr, frames: n, to: self.system)
+        }
     }
 
-    /// Builds the tap on whatever format the input device is offering now and
-    /// starts the engine. `keepingAudio` is false for a new dictation and true
-    /// when rebuilding mid-recording after the device changed underneath us —
-    /// there the samples already captured must survive.
-    private func arm(keepingAudio: Bool) throws {
-        // Which mic, decided before the engine is touched.
-        //
-        // A device is only ever set when the mode wants something other than
-        // the system default. Comparing against the input unit's own idea of
-        // its current device is not enough: once voice processing has run,
-        // the unit reports an internal device of its own, every comparison
-        // differs, the set fails (-10851), the failure posts a configuration
-        // change, and the re-arm sets it again — twenty times a second, with
-        // nothing recorded. Going back to the default after a lecture is a
-        // fresh engine, which follows the default on its own.
-        let fallback = InputDevice.defaultInput()
-        let target = InputDevice.resolve(wantDevice, in: InputDevice.all(), default: fallback)
-        let pin = target != fallback && target != kAudioObjectUnknown && pinFailedFor != target
-        if !pin, deviceOverridden {
-            replaceEngine("back to the system default mic")
-        } else if !wantVoiceProcessing, engine.inputNode.isVoiceProcessingEnabled {
-            // Turning it off on a live unit changes the format and posts two
-            // configuration changes, each re-arm costing the start of the
-            // lecture (0.85 s of 1.5 s captured). A fresh engine starts off.
+    /// Builds the mic tap on whatever format the input device is offering now
+    /// and starts the engine. Also what rebuilds it mid-recording after the
+    /// device changed underneath us; the audio already captured is untouched.
+    ///
+    /// Always the system default mic. The input unit's `CurrentDevice` is
+    /// never set: once voice processing has run, the unit reports an internal
+    /// device of its own, every comparison differs, the set fails (-10851),
+    /// the failure posts a configuration change, and the re-arm sets it again
+    /// — for as long as the recording runs, with nothing recorded.
+    private func arm() throws {
+        // Turning voice processing off on a live unit changes the format and
+        // posts two configuration changes, each re-arm costing the start of
+        // the recording (0.85 s of 1.5 s captured). A fresh engine starts off.
+        if !wantVoiceProcessing, engine.inputNode.isVoiceProcessingEnabled {
             replaceEngine("voice processing off")
-        }
-        armedDevice = pin ? target : fallback
-        if pin, !engageDevice(target) {
-            // A voice-processing unit can refuse the switch where a fresh one
-            // does not. One try on a fresh engine, then record from the
-            // default for the rest of this recording rather than loop.
-            replaceEngine("retrying the mic switch on a fresh engine")
-            if !engageDevice(target) {
-                pinFailedFor = target
-                armedDevice = fallback
-                replaceEngine("mic switch refused; recording from the default")
-            }
         }
 
         let input = engine.inputNode
@@ -288,13 +235,9 @@ final class Recorder {
               let conv = AVAudioConverter(from: mono, to: Recorder.outputFormat)
         else { throw RecorderError.converterFailed }
 
-        monoFormat = mono
-        converter = conv
+        mic.format = mono
+        mic.converter = conv
         tapFormat = tapF
-        if !keepingAudio {
-            rawPeak = 0
-            lock.lock(); samples.removeAll(keepingCapacity: true); lock.unlock()
-        }
 
         input.installTap(onBus: 0, bufferSize: 4096, format: tapF) { [weak self] buffer, _ in
             self?.append(buffer)
@@ -309,24 +252,22 @@ final class Recorder {
         // Every "it works everywhere except in that one app" report comes down
         // to one of these three changing without anyone asking.
         Log.write(String(format: "audio   input \"%@\" %gHz x%u vp=%@",
-                         InputDevice.name(of: armedDevice), tapF.sampleRate,
+                         InputDevice.name(of: InputDevice.defaultInput()), tapF.sampleRate,
                          tapF.channelCount, input.isVoiceProcessingEnabled ? "on" : "off"))
     }
 
     /// The input device was reconfigured under us. While recording that means
-    /// the tap is dead and must be rebuilt on the new format; the audio already
-    /// captured is kept.
+    /// the mic tap is dead and must be rebuilt on the new format. The computer
+    /// audio keeps running throughout: a meeting app opening the mic is the
+    /// start of the call, not a reason to stop hearing either side of it.
     private func reconfigure() {
-        // Another app grabbing the mic says nothing about the computer-audio
-        // tap, and re-arming here would start the mic under it.
-        guard !systemTap.isRunning else { return }
-        guard isRecording else {
+        guard isRecording, micArmed else {
             Log.write("audio   input device reconfigured while idle")
             return
         }
         Log.write("audio   input device reconfigured mid-recording — rebuilding the tap")
         do {
-            try armWithRecovery(keepingAudio: true)
+            try armWithRecovery()
         } catch {
             // ponytail: leaves the recording running on a dead tap rather than
             // ending the utterance from underneath the user. The release gate
@@ -337,11 +278,13 @@ final class Recorder {
         }
     }
 
-    /// Everything captured so far, without stopping. Used by live
-    /// transcription, which re-reads the whole buffer on every pass.
-    func snapshot() -> [Float] {
+    /// Everything captured from sample `from` on, without stopping. Live
+    /// transcription reads only the stretch it has not closed yet: handing it
+    /// the whole recording twice a second copied 230 MB a pass by the end of
+    /// an hour.
+    func snapshot(from: Int = 0) -> [Float] {
         lock.lock(); defer { lock.unlock() }
-        return samples
+        return from < samples.count ? Array(samples[from...]) : []
     }
 
     /// Stops capture and returns everything recorded, resampled to 16 kHz mono.
@@ -349,19 +292,28 @@ final class Recorder {
     func stop() -> [Float] {
         guard isRecording else { return [] }
         isRecording = false
-        if systemTap.isRunning {
-            systemTap.stop()
-        } else {
+        systemTap.stop()
+        if micArmed {
             engine.inputNode.removeTap(onBus: 0)
+            // Disable voice processing immediately so AirPods switch back to
+            // A2C (music) profile now, not after the grace period.
+            let input = engine.inputNode
+            if input.isVoiceProcessingEnabled {
+                do { try input.setVoiceProcessingEnabled(false) }
+                catch { Log.write("audio   could not release voice processing on stop: \(error.localizedDescription)") }
+            }
             engine.stop()
-            restoreGainIfRaised()
-            scheduleVoiceProcessingRelease()
         }
 
-        // Deliberately NOT clearing converter/monoFormat: a tap callback may
-        // still be mid-flight and reads both. start() replaces them anyway.
-        level = 0
-        lock.lock(); let out = samples; samples.removeAll(); lock.unlock()
+        // Deliberately NOT clearing the converters and formats: a tap callback
+        // may still be mid-flight and reads both. start() replaces them anyway.
+        mic.level = 0
+        system.level = 0
+        lock.lock()
+        accepting = false
+        let out = samples
+        samples.removeAll()
+        lock.unlock()
         return out
     }
 
@@ -370,15 +322,15 @@ final class Recorder {
         // Channel 0 only. Averaging a mic array's channels risks phase
         // cancellation, which would quietly reduce the level instead of
         // improving it.
-        appendMono(src[0], frames: Int(buffer.frameLength))
+        appendMono(src[0], frames: Int(buffer.frameLength), to: mic)
     }
 
-    /// Mono float at `monoFormat`'s rate, from either source.
-    private func appendMono(_ ch0: UnsafePointer<Float>, frames: Int) {
-        guard let conv = converter, let mono = monoFormat, frames > 0 else { return }
+    /// Mono float at the lane's own rate, resampled and added to the mix.
+    private func appendMono(_ ch0: UnsafePointer<Float>, frames: Int, to lane: Lane) {
+        guard let conv = lane.converter, let mono = lane.format, frames > 0 else { return }
         var sq: Float = 0
         for i in 0..<frames { sq += ch0[i] * ch0[i] }
-        rawPeak = max(rawPeak, (sq / Float(frames)).squareRoot())
+        lane.peak = max(lane.peak, (sq / Float(frames)).squareRoot())
 
         guard let monoBuf = AVAudioPCMBuffer(pcmFormat: mono, frameCapacity: AVAudioFrameCount(frames)),
               let dst = monoBuf.floatChannelData?[0] else { return }
@@ -404,16 +356,53 @@ final class Recorder {
         let slice = UnsafeBufferPointer(start: outCh, count: n)
         var osq: Float = 0
         for v in slice { osq += v * v }
-        level = (osq / Float(n)).squareRoot()
+        lane.level = (osq / Float(n)).squareRoot()
 
-        lock.lock(); samples.append(contentsOf: slice); lock.unlock()
+        lock.lock(); defer { lock.unlock() }
+        guard accepting else { return }
+        let now = ProcessInfo.processInfo.systemUptime
+        // The first buffer of the recording ends now, so it began `n` ago.
+        let began = origin ?? now - Double(n) / Config.sampleRate
+        origin = began
+        let at = Recorder.mixPosition(cursor: lane.cursor, frames: n,
+                                      elapsed: Int((now - began) * Config.sampleRate))
+        Recorder.add(slice, to: &samples, at: at)
+        lane.cursor = at + n
     }
 
-    /// Loudest 100 ms window. Global RMS is the wrong gate: hold the key for
-    /// five seconds and speak for one, and the silence drags the average under
-    /// any useful threshold.
+    /// How far a source may fall behind the clock before its next buffer is
+    /// placed by time instead of straight after its last one.
+    static let mixSlack = Int(Config.sampleRate / 2)
+
+    /// Where a source's next `frames` samples go in the mix, `elapsed` samples
+    /// into the recording. Normally straight after its last ones. But a source
+    /// that starts late — the tap is built after the mic — or goes away and
+    /// comes back — the mic rebuilt when a call app opens it — has to land
+    /// where the clock says. Appending would slide everything it says from
+    /// then on earlier, on top of the other side of the conversation.
+    /// Static and pure so it can be tested directly — see `--selftest-modes`.
+    static func mixPosition(cursor: Int, frames: Int, elapsed: Int) -> Int {
+        let due = elapsed - frames
+        return due - cursor > mixSlack ? due : cursor
+    }
+
+    /// Sums `slice` into `mix` at `at`, growing it with silence as needed.
+    /// Summed, not averaged: halving the mic whenever the computer is also
+    /// being recorded would move every loudness gate in the app.
+    static func add(_ slice: UnsafeBufferPointer<Float>, to mix: inout [Float], at: Int) {
+        let end = at + slice.count
+        if mix.count < end { mix.append(contentsOf: repeatElement(0, count: end - mix.count)) }
+        mix.withUnsafeMutableBufferPointer { m in
+            for i in 0..<slice.count { m[at + i] += slice[i] }
+        }
+    }
+
     /// Releases voice processing once dictation has been idle for a while.
     /// Cancelled by the next `start()`.
+    ///
+    /// ponytail: VP is now disabled immediately in stop(), so this only
+    /// serves as a backstop if the synchronous disable in stop() throws.
+    /// Remove entirely if the immediate path proves reliable.
     private func scheduleVoiceProcessingRelease() {
         releaseWork?.cancel()
         let work = DispatchWorkItem { [weak self] in
@@ -422,7 +411,7 @@ final class Recorder {
             guard input.isVoiceProcessingEnabled else { return }
             do {
                 try input.setVoiceProcessingEnabled(false)
-                Log.write("audio   released voice processing (other apps back to full volume)")
+                Log.write("audio   released voice processing (backstop)")
             } catch {
                 Log.write("audio   could not release voice processing: \(error.localizedDescription)")
             }
@@ -432,6 +421,9 @@ final class Recorder {
                                       execute: work)
     }
 
+    /// Loudest 100 ms window. Global RMS is the wrong gate: hold the key for
+    /// five seconds and speak for one, and the silence drags the average under
+    /// any useful threshold.
     static func peakRMS(_ s: [Float], windowSeconds: Double = 0.1) -> Float {
         let w = max(1, Int(Config.sampleRate * windowSeconds))
         guard s.count >= w else { return rms(s) }

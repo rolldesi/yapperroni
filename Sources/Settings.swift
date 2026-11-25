@@ -27,18 +27,6 @@ enum OutputMode: String, Codable, CaseIterable, Identifiable {
     }
 }
 
-/// Where a recording mode listens.
-enum AudioInput: String, Codable, CaseIterable, Identifiable {
-    /// The microphone, through `AVAudioEngine`.
-    case microphone
-    /// Everything the Mac is playing — a Teams call, a lecture in a browser —
-    /// taken digitally before it reaches the speakers, so there is no room,
-    /// no echo and no volume knob between the lecturer and the model.
-    case system
-    var id: String { rawValue }
-    var label: String { self == .microphone ? "Microphone" : "Computer audio (calls, videos)" }
-}
-
 /// Spoken-language choices. Whisper knows 99; these are the ones worth a row.
 /// `auto` lets whisper detect it from the first 30 s of each recording.
 enum Languages {
@@ -68,140 +56,65 @@ enum HUDPosition: String, Codable, CaseIterable, Identifiable {
     var label: String { rawValue.capitalized }
 }
 
-/// How Yapperroni records, as three kinds the user picks between:
+/// How Yapperroni records: one recorder on three shortcuts.
 ///
 /// - **Personal** — the original app: hold a key, speak, the text lands at the
 ///   caret. Its settings are the top-level ones in `Settings`, not a
 ///   `RecordingMode`.
-/// - **Room** — a lecture or a meeting room, through this Mac's microphone.
-/// - **Call** — Teams, Zoom, a browser tab: what the Mac plays, captured
-///   before it reaches the speakers.
+/// - **Room** and **Call** — the same recorder left running for a lecture or
+///   a meeting, with whatever the Mac is playing recorded alongside the mic.
 ///
 /// Room and Call are `RecordingMode`s, stored as `Settings.modes` in that fixed
-/// order (see `ModeKind`). Both are press-to-start, press-to-stop; nobody holds
-/// a key through an hour of lecture.
+/// order. Both are press-to-start, press-to-stop; nobody holds a key through
+/// an hour of lecture.
 enum ModeKind: Int, CaseIterable, Identifiable {
     case room = 0, call = 1
     var id: Int { rawValue }
     var name: String { self == .room ? "Room" : "Call" }
-    var input: AudioInput { self == .room ? .microphone : .system }
 }
 
+/// A shortcut and when its recording ends by itself. Nothing else.
+///
+/// A mode used to carry its own model, language, microphone, gain, voice
+/// processing, output and live setting, and Room and Call each had their own
+/// capture path. Every one of those was a way for a mode to record something
+/// other than what was said: Call left the user's own voice out, Room left
+/// the far end out, and Room's saved mic and voice-processing settings
+/// together recorded nothing at all. Now everything but the two fields below
+/// is Personal's. Keys an older build saved are ignored on decode.
 struct RecordingMode: Codable, Equatable, Identifiable {
     var id = UUID()
     var name: String
     var enabled = true
     var binding: KeyBinding
-    /// A `.bin` for whisper.cpp or a sherpa-onnx folder name, like `modelFilename`.
-    var modelFilename: String
-    var voiceIsolation: Bool
-    var live: Bool
-    var output: OutputMode
-    /// Beam search instead of greedy. Whisper only; slower.
-    var accurate: Bool
     /// Ceiling on one recording. 0 means none.
     var maxMinutes: Double
-    /// End by itself after `Config.maxSilenceSeconds` of quiet. Off for a
-    /// lecture: a lecturer pausing at the board is not the end.
+    /// End by itself after `Config.maxSilenceSeconds` of quiet. Off by
+    /// default: a lecturer pausing at the board is not the end.
     var stopOnSilence: Bool
-    /// A code from `Languages.all`. English-only models ignore it. English
-    /// unless the user picks otherwise: auto-detect decides from the first
-    /// 30 s, and live from each stretch, so accented English can come out
-    /// as French text.
-    var language = "en"
-    /// Silero voice-activity detection before whisper: silence is cut out
-    /// instead of decoded, which is where whisper invents its sentences.
-    /// Off by default: on a quiet, muffled lecture it judged the lecturer to
-    /// be silence and cut her — 62.3% WER against 25.3% without it (MIT
-    /// 14.73, 10 min). On clean audio it helped by about a point. Worth
-    /// turning on for recordings with long real silences.
-    var vad = false
-    var input = AudioInput.microphone
-    /// Which mic when `input` is the microphone; see `InputDevice.resolve`.
-    var micDevice = InputDevice.systemDefault
-    /// Raise the mic's input gain to full for the recording, then put it back.
-    var maxMicGain = false
 
-    /// ⌥L. Greedy, not accurate: beam search made the long-lecture benchmark
-    /// worse (see `Whisper.transcribe`). Voice processing off because it is
-    /// tuned for a voice near the mic and treats a lecturer across the room as
-    /// noise to suppress. Live off because live mode re-transcribes the whole
-    /// buffer every tick, which grows without bound over an hour. Copy, not
-    /// paste: an hour of text at whatever caret happens to be frontmost is
-    /// never what anyone wants.
+    /// ⌥L.
     static let room = RecordingMode(
-        name: "Room",
+        name: ModeKind.room.name,
         binding: KeyBinding(keyCode: 37, deviceMask: 0,
                             modifierFlags: CGEventFlags.maskAlternate.rawValue, kind: .combo),
-        modelFilename: Config.defaultModelFilename,
-        voiceIsolation: false, live: false, output: .copy,
-        accurate: false, maxMinutes: 180, stopOnSilence: false,
-        micDevice: InputDevice.builtInMic, maxMicGain: true)
+        maxMinutes: 180, stopOnSilence: false)
 
-    /// ⌥O. A class on Teams, Zoom or in a browser tab, recorded from the
-    /// computer's own audio rather than through the air to the mic.
+    /// ⌥O.
     static let call = RecordingMode(
-        name: "Call",
+        name: ModeKind.call.name,
         binding: KeyBinding(keyCode: 31, deviceMask: 0,
                             modifierFlags: CGEventFlags.maskAlternate.rawValue, kind: .combo),
-        modelFilename: Config.defaultModelFilename,
-        voiceIsolation: false, live: false, output: .copy,
-        accurate: false, maxMinutes: 180, stopOnSilence: false,
-        input: .system)
+        maxMinutes: 180, stopOnSilence: false)
 
     static let defaults: [RecordingMode] = [.room, .call]
 
-    /// Whatever was saved, as exactly [Room, Call]. Builds before the three
-    /// kinds kept a free list of modes ("Lecture", "Online class", anything
-    /// added); the first microphone mode becomes Room and the first
-    /// computer-audio mode becomes Call, keeping their shortcuts and settings.
-    /// Pure, for `--selftest-modes`.
+    /// Whatever was saved, as exactly [Room, Call] — the hotkey tap addresses
+    /// a mode by its index. Pure, for `--selftest-modes`.
     static func normalized(_ saved: [RecordingMode]) -> [RecordingMode] {
-        var room = saved.first { $0.input == .microphone } ?? .room
-        var call = saved.first { $0.input == .system } ?? .call
-        room.name = ModeKind.room.name
-        call.name = ModeKind.call.name
-        return [room, call]
-    }
-
-    init(name: String, binding: KeyBinding, modelFilename: String,
-         voiceIsolation: Bool, live: Bool, output: OutputMode,
-         accurate: Bool, maxMinutes: Double, stopOnSilence: Bool,
-         language: String = "en", vad: Bool = false, input: AudioInput = .microphone,
-         micDevice: String = InputDevice.systemDefault, maxMicGain: Bool = false) {
-        self.name = name; self.binding = binding; self.modelFilename = modelFilename
-        self.voiceIsolation = voiceIsolation; self.live = live; self.output = output
-        self.accurate = accurate; self.maxMinutes = maxMinutes; self.stopOnSilence = stopOnSilence
-        self.language = language; self.vad = vad; self.input = input
-        self.micDevice = micDevice; self.maxMicGain = maxMicGain
-    }
-
-    // Decoded field by field so a mode saved by an older build, missing the
-    // newer fields, keeps its shortcut and model instead of failing the whole
-    // list back to the defaults.
-    private enum CodingKeys: String, CodingKey {
-        case id, name, enabled, binding, modelFilename, voiceIsolation, live, output,
-             accurate, maxMinutes, stopOnSilence, language, vad, input, micDevice, maxMicGain
-    }
-
-    init(from decoder: Decoder) throws {
-        let c = try decoder.container(keyedBy: CodingKeys.self)
-        id             = try c.decode(UUID.self, forKey: .id)
-        name           = try c.decode(String.self, forKey: .name)
-        enabled        = try c.decode(Bool.self, forKey: .enabled)
-        binding        = try c.decode(KeyBinding.self, forKey: .binding)
-        modelFilename  = try c.decode(String.self, forKey: .modelFilename)
-        voiceIsolation = try c.decode(Bool.self, forKey: .voiceIsolation)
-        live           = try c.decode(Bool.self, forKey: .live)
-        output         = try c.decode(OutputMode.self, forKey: .output)
-        accurate       = try c.decode(Bool.self, forKey: .accurate)
-        maxMinutes     = try c.decode(Double.self, forKey: .maxMinutes)
-        stopOnSilence  = try c.decode(Bool.self, forKey: .stopOnSilence)
-        language       = try c.decodeIfPresent(String.self, forKey: .language) ?? "en"
-        vad            = try c.decodeIfPresent(Bool.self, forKey: .vad) ?? false
-        input          = try c.decodeIfPresent(AudioInput.self, forKey: .input) ?? .microphone
-        micDevice      = try c.decodeIfPresent(String.self, forKey: .micDevice) ?? InputDevice.systemDefault
-        maxMicGain     = try c.decodeIfPresent(Bool.self, forKey: .maxMicGain) ?? false
+        ModeKind.allCases.map { kind in
+            saved.first { $0.name == kind.name } ?? defaults[kind.rawValue]
+        }
     }
 }
 

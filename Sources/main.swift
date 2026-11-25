@@ -57,10 +57,9 @@ func selftestWhisper(_ wav: String, model: String? = nil,
     exit(0)
 }
 
-/// `mic`: a mode's micDevice preference ("", "builtin", or a UID); `maxGain`
-/// raises the input gain for the 3 s and must put it back afterwards. Levels
-/// only — nothing is transcribed, so a room full of people is not written down.
-func selftestAudio(mic: String = InputDevice.systemDefault, maxGain: Bool = false) -> Never {
+/// Levels only — nothing is transcribed, so a room full of people is not
+/// written down.
+func selftestAudio() -> Never {
     func say(_ m: String) { print(m); Log.write("selftest \(m)") }
     // Distinguishes "mic denied" from "mic authorized but silent". Launched
     // from a terminal, the grant belongs to the terminal, not to Yapperroni.
@@ -75,26 +74,17 @@ func selftestAudio(mic: String = InputDevice.systemDefault, maxGain: Bool = fals
     }
     print("mic authorization: \(authName)")
 
-    let gainBefore = InputDevice.inputVolume(InputDevice.resolve(mic, in: InputDevice.all(),
-                                                                  default: InputDevice.defaultInput()))
     let r = Recorder()
-    do { try r.start(voiceIsolation: mic.isEmpty ? Settings.shared.voiceIsolation : false,
-                     micDevice: mic, maxGain: maxGain) } catch {
+    do { try r.start(voiceIsolation: Settings.shared.voiceIsolation) } catch {
         print("FAIL: \(error)"); exit(1)
     }
-    say("recording 3s from \(mic.isEmpty ? "the default mic" : mic)…")
+    say("recording 3s from the default mic…")
     RunLoop.current.run(until: Date().addingTimeInterval(3))
     let pcm = r.stop()
     let secs = Double(pcm.count) / Config.sampleRate
     let rms = Recorder.rms(pcm)
     say(String(format: "captured %d samples (%.2fs) at 16 kHz, rms %.4f, peak100ms %.4f",
                pcm.count, secs, rms, Recorder.peakRMS(pcm)))
-    let gainAfter = InputDevice.inputVolume(InputDevice.resolve(mic, in: InputDevice.all(),
-                                                                 default: InputDevice.defaultInput()))
-    if maxGain, gainBefore != gainAfter {
-        say("FAIL: mic gain not restored (\(gainBefore.map { "\($0)" } ?? "-") -> \(gainAfter.map { "\($0)" } ?? "-"))")
-        exit(1)
-    }
     guard secs > 1.8 else { print("FAIL: short capture — resample path is wrong"); exit(1) }
     guard Double(Recorder.peakRMS(pcm)) > Settings.shared.minPeakRMS else {
         print(auth == .authorized
@@ -106,29 +96,28 @@ func selftestAudio(mic: String = InputDevice.systemDefault, maxGain: Bool = fals
     exit(0)
 }
 
-/// The sequence that broke the engine: dictation (default mic, voice
-/// processing on), a lecture straight after (built-in mic, off, full gain),
-/// then dictation again — on one recorder, as the app does. Each must capture.
+/// The sequence that broke the engine: dictation (voice processing on), a
+/// long recording straight after (off, with the computer's audio alongside),
+/// then dictation again — on one recorder, as the app does. Each must capture,
+/// and in a long recording the mic must be delivering, not just the tap.
 /// Levels only. Launch with `open` so the mic grant is the app's.
 func selftestMicSequence() -> Never {
     func say(_ m: String) { print(m); Log.write("selftest \(m)") }
     let r = Recorder()
     var fails = 0
-    for (what, vp, mic, gain) in [("dictation", true, InputDevice.systemDefault, false),
-                                  ("lecture", false, InputDevice.builtInMic, true),
-                                  ("dictation again", true, InputDevice.systemDefault, false),
-                                  ("lecture again", false, InputDevice.builtInMic, true)] {
+    for (what, long) in [("dictation", false), ("call", true), ("dictation again", false), ("call again", true)] {
         do {
-            try r.start(voiceIsolation: vp, micDevice: mic, maxGain: gain)
+            try r.start(voiceIsolation: !long, computerAudio: long ? .everything : nil)
         } catch {
             fails += 1; say("FAIL \(what): \(error)"); continue
         }
         RunLoop.current.run(until: Date().addingTimeInterval(1.5))
         let pcm = r.stop()
-        let ok = pcm.count > Int(Config.sampleRate)
+        let ok = pcm.count > Int(Config.sampleRate) && r.micPeak > 0
         fails += ok ? 0 : 1
-        say(String(format: "%@ %@: %.2fs captured, peak100ms %.4f", ok ? "ok  " : "FAIL", what,
-                   Double(pcm.count) / Config.sampleRate, Recorder.peakRMS(pcm)))
+        say(String(format: "%@ %@: %.2fs captured, peak100ms %.4f, mic %.5f, computer audio %.5f",
+                   ok ? "ok  " : "FAIL", what, Double(pcm.count) / Config.sampleRate,
+                   Recorder.peakRMS(pcm), r.micPeak, r.systemPeak))
     }
     say(fails == 0 ? "PASS" : "FAIL: \(fails)")
     exit(fails == 0 ? 0 : 1)
@@ -179,20 +168,21 @@ func selftestHotkey() -> Never {
 /// Results go to the log as well as stdout, so this is meaningful when the
 /// bundle is launched with `open` and has no terminal attached.
 ///
-/// `system: true` records the computer's own output instead of the mic: the
-/// clip goes out through afplay and comes back through the process tap, never
-/// through the air. Also launch it with `open` — the System Audio Recording
-/// grant belongs to the app, not the terminal.
+/// `system: true` records the way Room and Call do — the mic and the
+/// computer's own output together — so the clip comes back twice: through the
+/// process tap, and through the air. Both must have delivered, and the
+/// transcript says whether hearing it twice hurts. Also launch it with `open`
+/// — the System Audio Recording grant belongs to the app, not the terminal.
 func selftestLoopback(_ wav: String, system: Bool = false) -> Never {
     func say(_ m: String) { print(m); Log.write("loopback \(m)") }
 
-    if !system, AVCaptureDevice.authorizationStatus(for: .audio) != .authorized {
+    if AVCaptureDevice.authorizationStatus(for: .audio) != .authorized {
         say("requesting microphone access — answer the prompt (waiting up to 60s)")
         let sem = DispatchSemaphore(value: 0)
         AVCaptureDevice.requestAccess(for: .audio) { _ in sem.signal() }
         _ = sem.wait(timeout: .now() + 60)
     }
-    let auth = system ? .authorized : AVCaptureDevice.authorizationStatus(for: .audio)
+    let auth = AVCaptureDevice.authorizationStatus(for: .audio)
     say("mic authorization: \(auth == .authorized ? "authorized" : "NOT authorized (raw \(auth.rawValue))")")
     guard auth == .authorized else {
         say("FAIL: grant Yapperroni microphone access in System Settings, then rerun")
@@ -200,10 +190,11 @@ func selftestLoopback(_ wav: String, system: Bool = false) -> Never {
     }
 
     let r = Recorder()
-    do { try r.start(voiceIsolation: Settings.shared.voiceIsolation, input: system ? .system : .microphone) }
+    do { try r.start(voiceIsolation: !system && Settings.shared.voiceIsolation,
+                     computerAudio: system ? .everything : nil) }
     catch { say("FAIL: \(error)"); exit(1) }
 
-    say("source: \(system ? "computer audio" : "microphone")")
+    say("source: \(system ? "microphone + computer audio" : "microphone")")
     say("tap format: \(r.tapFormat.map { "\($0.sampleRate)Hz \($0.channelCount)ch" } ?? "?")")
     say("playing \(wav) through the speakers and listening…")
     let task = Process()
@@ -217,11 +208,15 @@ func selftestLoopback(_ wav: String, system: Bool = false) -> Never {
     let secs = Double(pcm.count) / Config.sampleRate
     let rms = Recorder.rms(pcm)
     let peak = Recorder.peakRMS(pcm)
-    say(String(format: "captured %.2fs, raw %.5f, converted rms %.5f, peak100ms %.5f (gate floor %.5f)",
-               secs, r.rawPeak, rms, peak, Settings.shared.minPeakRMS))
+    say(String(format: "captured %.2fs, raw mic %.5f heard to %.1fs, raw computer audio %.5f heard to %.1fs, converted rms %.5f, peak100ms %.5f (gate floor %.5f)",
+               secs, r.micPeak, r.micSeconds, r.systemPeak, r.systemSeconds, rms, peak, Settings.shared.minPeakRMS))
 
-    if system, peak == 0 {
-        say("FAIL: exact digital silence — System Audio Recording is not granted to Yapperroni")
+    if system, r.systemPeak == 0 {
+        say("FAIL: exact digital silence from the computer — System Audio Recording is not granted to Yapperroni")
+        exit(1)
+    }
+    if system, r.micPeak == 0 {
+        say("FAIL: the microphone delivered nothing alongside the computer audio")
         exit(1)
     }
     guard Double(peak) > Settings.shared.minPeakRMS else {
@@ -234,7 +229,7 @@ func selftestLoopback(_ wav: String, system: Bool = false) -> Never {
     w.close()
     say("heard: \"\(text)\"")
     guard !text.isEmpty else { say("FAIL: audio captured but transcript empty"); exit(1) }
-    say("PASS — \(system ? "computer audio" : "mic") to text works end to end")
+    say("PASS — \(system ? "mic + computer audio" : "mic") to text works end to end")
     exit(0)
 }
 
@@ -445,10 +440,10 @@ func selftestStreaming(_ wav: String, model: String? = nil) -> Never {
 
     // The sample closure returns only the audio that would have been recorded
     // by now, so the transcriber sees the clip arrive at real-time speed.
-    live.start(sample: {
+    live.start(sample: { from in
         let elapsed = Date().timeIntervalSince(start)
         let n = min(pcm.count, Int(elapsed * Config.sampleRate))
-        return Array(pcm[0..<max(0, n)])
+        return Array(pcm[min(from, n)..<n])
     })
 
     // Let it play out, pumping the run loop so main-queue callbacks fire.
@@ -480,6 +475,52 @@ func selftestStreaming(_ wav: String, model: String? = nil) -> Never {
     }
     if dupeRun > 1 { print("FAIL: \(dupeRun) adjacent duplicate words — commitment is double-emitting"); exit(1) }
     print("PASS")
+    exit(0)
+}
+
+/// Measures the speech detector instead of trusting it: per 24 s window (the
+/// most a live pass reads), the highest speech probability, the longest run of
+/// frames at or above the threshold, and whether the window would be decoded.
+/// A lecture must have no window that reads as silent; room noise must have
+/// none that reads as speech.
+func selftestVAD(_ what: String) -> Never {
+    func say(_ m: String) { print(m); Log.write("vad     \(m)") }
+    var pcm: [Float]
+    if what.hasPrefix("--mic=") {
+        let secs = Double(what.dropFirst(6)) ?? 20
+        let r = Recorder()
+        do { try r.start(voiceIsolation: false) } catch { say("FAIL: \(error)"); exit(1) }
+        say("listening to the room for \(Int(secs))s…")
+        RunLoop.current.run(until: Date().addingTimeInterval(secs))
+        pcm = r.stop()
+        say(String(format: "room: rms %.5f, peak100ms %.5f", Recorder.rms(pcm), Recorder.peakRMS(pcm)))
+    } else {
+        guard let w = loadWav(what) else { say("FAIL: could not read \(what)"); exit(1) }
+        pcm = w
+    }
+    guard let vad = SpeechDetector() else { say("FAIL: no ggml-silero model"); exit(1) }
+    let window = Int(StreamingTranscriber.windowSeconds * Config.sampleRate)
+    let t0 = Date()
+    var silent = 0, total = 0, lowestMax: Float = 1, highestMax: Float = 0
+    var rows: [String] = []
+    var i = 0
+    while i < pcm.count {
+        let chunk = Array(pcm[i..<min(pcm.count, i + window)])
+        let probs = vad.probabilities(chunk)
+        let mx = probs.max() ?? 0
+        var longest = 0, streak = 0
+        for p in probs { streak = p >= SpeechDetector.threshold ? streak + 1 : 0; longest = max(longest, streak) }
+        let speech = SpeechDetector.firstSpeech(probs) != nil
+        total += 1; if !speech { silent += 1 }
+        lowestMax = min(lowestMax, mx); highestMax = max(highestMax, mx)
+        rows.append(String(format: "%4ds max %.2f run %3d %@", i / Int(Config.sampleRate), mx, longest, speech ? "speech" : "-"))
+        i += window
+    }
+    let dt = Date().timeIntervalSince(t0)
+    rows.forEach { print("  " + $0) }
+    say(String(format: "%@: %d of %d windows read as silent; window max between %.2f and %.2f; %.0fx real time",
+               (what as NSString).lastPathComponent, silent, total, lowestMax, highestMax,
+               Double(pcm.count) / Config.sampleRate / max(dt, 0.001)))
     exit(0)
 }
 
@@ -718,7 +759,12 @@ func selftestChunk() -> Never {
 /// the capture with each model in turn. Launch with `open` (the System Audio
 /// Recording grant is the app's). Text results go to `--out` as JSON; the
 /// captured audio stays in memory like any other recording.
-func selftestCapture(_ wav: String, models: [String], options: DecodeOptions, out: String?) -> Never {
+///
+/// `mic: true` records the microphone alongside, as Room and Call do: the
+/// silent proof that both sources run together and land in one recording.
+/// Leave it off to score a model — the room would be on top of the clip.
+func selftestCapture(_ wav: String, models: [String], options: DecodeOptions, out: String?,
+                     mic: Bool = false) -> Never {
     func say(_ m: String) { print(m); Log.write("capture  \(m)") }
     let url = URL(fileURLWithPath: wav)
     guard let file = try? AVAudioFile(forReading: url) else { say("FAIL: cannot read \(wav)"); exit(1) }
@@ -734,8 +780,8 @@ func selftestCapture(_ wav: String, models: [String], options: DecodeOptions, ou
 
     let r = Recorder()
     do {
-        try r.start(voiceIsolation: false, input: .system,
-                    systemScope: .process(getpid(), muted: true))
+        try r.start(voiceIsolation: false, computerAudio: .process(getpid(), muted: true),
+                    microphone: mic)
     } catch { say("FAIL: \(error)"); exit(1) }
 
     say(String(format: "playing %.0fs muted through the computer-audio tap (nothing on the speakers)…", clipSecs))
@@ -752,7 +798,15 @@ func selftestCapture(_ wav: String, models: [String], options: DecodeOptions, ou
     let secs = Double(pcm.count) / Config.sampleRate
     say(String(format: "captured %.1fs of %.1fs in %.1fs wall, peak100ms %.4f",
                secs, clipSecs, Date().timeIntervalSince(t0), Recorder.peakRMS(pcm)))
-    guard Recorder.peakRMS(pcm) > 0 else { say("FAIL: exact silence — System Audio Recording not granted"); exit(1) }
+    guard r.systemPeak > 0 else { say("FAIL: exact silence — System Audio Recording not granted"); exit(1) }
+    if mic {
+        say(String(format: "raw mic %.5f heard to %.1fs, raw computer audio %.5f heard to %.1fs",
+                   r.micPeak, r.micSeconds, r.systemPeak, r.systemSeconds))
+        guard r.micPeak > 0 else { say("FAIL: the microphone delivered nothing alongside the computer audio"); exit(1) }
+        // Another app opening the mic mid-recording rebuilds the tap; a mic
+        // that never came back stops well short of the end.
+        guard r.micSeconds > secs - 2 else { say("FAIL: the microphone stopped part-way through"); exit(1) }
+    }
 
     var results: [[String: Any]] = []
     for name in models {
@@ -772,56 +826,64 @@ func selftestCapture(_ wav: String, models: [String], options: DecodeOptions, ou
     exit(0)
 }
 
-/// A mode saved before language/VAD/input existed must still decode — the
-/// fallback on failure is the default list, which silently wipes the user's
-/// shortcuts and models.
+/// A mode saved by any earlier build must still decode — the fallback on
+/// failure is the default list, which silently wipes the user's shortcuts.
+/// Also where the two sources of a long recording are checked to land in the
+/// right place in the mix.
 func selftestModes() -> Never {
     var failures = 0
     func check(_ what: String, _ ok: Bool) {
         if !ok { failures += 1 }
         print("  \(ok ? "ok  " : "FAIL") \(what)")
     }
+    // What the build before this one saved: every setting a mode used to own.
     var old = try! JSONSerialization.jsonObject(with: JSONEncoder().encode(RecordingMode.room)) as! [String: Any]
-    old["language"] = nil; old["vad"] = nil; old["input"] = nil
-    old["micDevice"] = nil; old["maxMicGain"] = nil
-    old["name"] = "Saved by 1.2"
+    for (k, v) in ["modelFilename": "ggml-large-v3-turbo-q5_0.bin", "voiceIsolation": true, "live": true,
+                   "output": "copy", "accurate": false, "language": "en", "vad": false,
+                   "input": "microphone", "micDevice": "builtin", "maxMicGain": true] as [String: Any] {
+        old[k] = v
+    }
+    old["maxMinutes"] = 90
     let data = try! JSONSerialization.data(withJSONObject: [old])
     let decoded = try? JSONDecoder().decode([RecordingMode].self, from: data)
-    check("an older saved mode decodes", decoded?.count == 1)
-    check("its own fields survive", decoded?.first?.name == "Saved by 1.2"
-          && decoded?.first?.binding == RecordingMode.room.binding)
-    check("missing fields take the defaults", decoded?.first?.language == "en"
-          && decoded?.first?.vad == false && decoded?.first?.input == .microphone)
-    check("mic fields default for an older mode", decoded?.first?.micDevice == InputDevice.systemDefault
-          && decoded?.first?.maxMicGain == false)
+    check("a mode saved with the old settings decodes", decoded?.count == 1)
+    check("its shortcut and limits survive", decoded?.first?.binding == RecordingMode.room.binding
+          && decoded?.first?.maxMinutes == 90 && decoded?.first?.stopOnSilence == false)
 
-    print("which mic a mode records from:")
-    let mics = [InputDevice(id: 10, uid: "airpods-uid", name: "AirPods", builtIn: false),
-                InputDevice(id: 20, uid: "builtin-uid", name: "MacBook Air Microphone", builtIn: true),
-                InputDevice(id: 30, uid: "iphone-uid", name: "iPhone Microphone", builtIn: false)]
-    check("default follows the system", InputDevice.resolve("", in: mics, default: 10) == 10)
-    check("built-in finds the Mac's own mic", InputDevice.resolve("builtin", in: mics, default: 10) == 20)
-    check("a chosen device by UID", InputDevice.resolve("iphone-uid", in: mics, default: 10) == 30)
-    check("a missing device falls back to default", InputDevice.resolve("usb-gone", in: mics, default: 10) == 10)
-    check("no built-in mic falls back to default",
-          InputDevice.resolve("builtin", in: [mics[0]], default: 10) == 10)
-    check("lecture preset records from the built-in mic at full gain",
-          RecordingMode.room.micDevice == InputDevice.builtInMic && RecordingMode.room.maxMicGain)
-
-    print("modes as the three kinds:")
-    var lecture = RecordingMode.room; lecture.name = "Lecture"; lecture.maxMinutes = 90
-    var online = RecordingMode.call; online.name = "Online class"
+    print("modes as the two kinds:")
+    var room = RecordingMode.room; room.maxMinutes = 90
     var extra = RecordingMode.room; extra.name = "Extra"
-    let n = RecordingMode.normalized([online, lecture, extra])
-    check("old Lecture becomes Room, settings kept", n[0].name == "Room" && n[0].maxMinutes == 90)
-    check("old Online class becomes Call", n[1].name == "Call" && n[1].input == .system)
+    let n = RecordingMode.normalized([RecordingMode.call, extra, room])
+    check("Room and Call found by name, settings kept",
+          n[0].name == "Room" && n[0].maxMinutes == 90 && n[1] == RecordingMode.call)
     check("always exactly [Room, Call]", n.count == 2)
-    let empty = RecordingMode.normalized([])
-    check("nothing saved gives the defaults", empty[0].input == .microphone && empty[1].input == .system)
+    check("nothing saved gives the defaults", RecordingMode.normalized([]) == RecordingMode.defaults)
 
     let round = try? JSONDecoder().decode(RecordingMode.self,
                                           from: JSONEncoder().encode(RecordingMode.call))
     check("a current mode round-trips", round == RecordingMode.call)
+
+    print("where a source lands in the mix:")
+    let second = Int(Config.sampleRate)
+    check("in step with the clock: straight after its last samples",
+          Recorder.mixPosition(cursor: 16_000, frames: 1_365, elapsed: 17_400) == 16_000)
+    check("a little late is still in step",
+          Recorder.mixPosition(cursor: 16_000, frames: 1_365, elapsed: 17_365 + Recorder.mixSlack) == 16_000)
+    check("the tap, started 0.8 s after the mic, starts 0.8 s in",
+          Recorder.mixPosition(cursor: 0, frames: 160, elapsed: 12_960) == 12_800)
+    check("a mic rebuilt after a 3 s gap resumes where the clock is",
+          Recorder.mixPosition(cursor: 10 * second, frames: 1_365, elapsed: 13 * second + 1_365) == 13 * second)
+    check("a source ahead of the clock is never moved back",
+          Recorder.mixPosition(cursor: 20_000, frames: 1_365, elapsed: 17_000) == 20_000)
+
+    var mix: [Float] = []
+    func add(_ v: [Float], at: Int) { v.withUnsafeBufferPointer { Recorder.add($0, to: &mix, at: at) } }
+    add([1, 1, 1], at: 0)
+    add([2, 2], at: 2)
+    check("two sources over the same moment are summed", mix == [1, 1, 3, 2])
+    add([5], at: 6)
+    check("a gap before a late source is silence", mix == [1, 1, 3, 2, 0, 0, 5])
+
     print(failures == 0 ? "PASS" : "FAIL: \(failures) case(s)")
     exit(failures == 0 ? 0 : 1)
 }
@@ -840,19 +902,17 @@ case "--selftest-chunk":
 case "--selftest-modes":
     selftestModes()
 case "--selftest-capture":
-    // <wav> --models=a,b [--vad] [--lang=xx] [--out=results.json]
-    guard args.count > 2 else { print("usage: yapperroni --selftest-capture <file.wav> --models=a,b [--vad] [--lang=xx] [--out=path]"); exit(2) }
+    // <wav> --models=a,b [--vad] [--lang=xx] [--out=results.json] [--mic]
+    guard args.count > 2 else { print("usage: yapperroni --selftest-capture <file.wav> --models=a,b [--vad] [--lang=xx] [--out=path] [--mic]"); exit(2) }
     let rest = Array(args.dropFirst(3))
     func value(_ k: String) -> String? { rest.first { $0.hasPrefix(k) }.map { String($0.dropFirst(k.count)) } }
     var opts = DecodeOptions(vad: rest.contains("--vad"))
     if let l = value("--lang=") { opts.language = l }
     selftestCapture(args[2], models: (value("--models=") ?? Settings.shared.modelFilename)
                         .split(separator: ",").map(String.init),
-                    options: opts, out: value("--out="))
+                    options: opts, out: value("--out="), mic: rest.contains("--mic"))
 case "--selftest-audio":
-    // [--mic=builtin|<uid>] [--max-gain]
-    let mic = args.first { $0.hasPrefix("--mic=") }.map { String($0.dropFirst(6)) } ?? InputDevice.systemDefault
-    selftestAudio(mic: mic, maxGain: args.contains("--max-gain"))
+    selftestAudio()
 case "--selftest-mic-sequence":
     selftestMicSequence()
 case "--selftest-hotkey":
@@ -871,6 +931,27 @@ case "--selftest-streaming":
 case "--selftest-loopback":
     guard args.count > 2 else { print("usage: yapperroni --selftest-loopback <file.wav>"); exit(2) }
     selftestLoopback(args[2], system: args.contains("--system"))
+case "--selftest-vad":
+    // <wav> | --mic=<seconds>   What the speech detector makes of a clip, or
+    // of this room right now (launch with `open`; levels only, nothing kept).
+    guard args.count > 2 else { print("usage: yapperroni --selftest-vad <file.wav> | --mic=<seconds>"); exit(2) }
+    selftestVAD(args[2])
+case "--selftest-focus":
+    // [app name]  What Room and Call would do with a live word right now:
+    // typed, or held. With a name, that app's own focus, wherever it is on
+    // screen. Launch with `open` — the Accessibility grant is the app's.
+    var name = NSWorkspace.shared.frontmostApplication?.localizedName ?? "?"
+    var role = Injector.focusedRole()
+    if args.count > 2 {
+        name = args[2]
+        guard let app = NSWorkspace.shared.runningApplications.first(where: { $0.localizedName == name }) else {
+            print("FAIL: \(name) is not running"); exit(1)
+        }
+        role = Injector.focusedRole(in: AXUIElementCreateApplication(app.processIdentifier))
+    }
+    let line = "focus   \(name) role=\(role ?? "none") types=\(Injector.textRoles.contains(role ?? ""))"
+    print(line); Log.write(line)
+    exit(0)
 case "--log":
     print(Log.path)
     exit(0)

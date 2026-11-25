@@ -1,8 +1,8 @@
 import SwiftUI
 
-/// The three ways to record, as cards. Each shows its shortcut at a glance and
-/// opens to only the settings that matter for it; the ones that only matter
-/// sometimes sit under Advanced. One card is open at a time.
+/// The three shortcuts, as cards. Personal holds every setting; Room and Call
+/// are the same recorder left running, so their cards hold only a shortcut
+/// and when the recording ends by itself. One card is open at a time.
 struct ModesView: View {
     enum Card: String, Hashable { case personal, room, call }
     /// Remembered across launches. Empty — all three collapsed — on first
@@ -19,7 +19,7 @@ struct ModesView: View {
                     Text("Modes")
                         .font(.system(size: 26, weight: .semibold))
                         .foregroundStyle(Palette.ink)
-                    Text("Three ways to record, each on its own shortcut. Pick by where the voice is coming from.")
+                    Text("One recorder on three shortcuts. Room and Call keep running until you stop them, and also record what your Mac is playing.")
                         .font(.system(size: 13))
                         .foregroundStyle(Palette.muted)
                 }
@@ -134,8 +134,11 @@ private struct ModeCard<Content: View>: View {
     private var subtitle: String {
         switch card {
         case .personal: return "You, at your Mac. Hold a key, speak, and the text lands where you're typing."
-        case .room: return "Lectures and meeting rooms. Records the room through this Mac's microphone."
-        case .call: return "Teams, Zoom, Meet, any call or video. Records what your Mac plays, not the room."
+        case .room, .call:
+            let m = settings.modes[kind!.rawValue]
+            return "Your mic and what the Mac plays, together. "
+                + (m.maxMinutes == 0 ? "Runs until you stop it" : "Stops itself after \(Int(m.maxMinutes)) min")
+                + (m.stopOnSilence ? " or \(Int(Config.maxSilenceSeconds))s of silence." : ".")
         }
     }
     private var shortcuts: [String] {
@@ -197,7 +200,7 @@ private struct PersonalSettings: View {
             Hint(settings.output.detail)
         }
         Toggle("Filter background noise", isOn: $settings.voiceIsolation)
-        Hint("Apple's voice processing: hears you over music and room noise. Tuned for a voice close to the mic.")
+        Hint("Apple's voice processing: hears you over music and room noise. Tuned for a voice close to the mic. Always off in Room and Call, where it would turn down the call being recorded.")
     }
 }
 
@@ -206,7 +209,6 @@ private struct PersonalSettings: View {
 private struct RecordingModeSettings: View {
     let kind: ModeKind
     @ObservedObject private var settings = Settings.shared
-    @State private var advanced = false
 
     private var mode: Binding<RecordingMode> { $settings.modes[kind.rawValue] }
 
@@ -214,53 +216,13 @@ private struct RecordingModeSettings: View {
         KeyRecorderField(title: "Start / stop", binding: mode.binding,
                          conflictsWith: settings.shortcuts(except: .mode(kind)), allowBareModifier: false)
 
-        if kind == .room {
-            Picker("Microphone", selection: mode.micDevice) {
-                Text("This Mac's built-in mic").tag(InputDevice.builtInMic)
-                Text("System default").tag(InputDevice.systemDefault)
-                ForEach(InputDevice.all(), id: \.uid) { Text($0.name).tag($0.uid) }
-            }
-            Hint("AirPods and headsets aim at your mouth and filter out everyone else, so a lecturer across the room is removed before Yapperroni hears it. Use the built-in mic, or an iPhone placed nearer the front.")
-            Toggle("Max mic sensitivity while recording", isOn: mode.maxMicGain)
-        } else {
-            Hint("Captures the call itself, before it reaches your speakers or headphones — even with the Mac muted. macOS asks once to allow System Audio Recording.")
-        }
-
         Divider().padding(.vertical, 2)
 
-        ModelAndLanguage(model: mode.modelFilename, language: mode.language)
-
-        Divider().padding(.vertical, 2)
-
-        Picker("When finished", selection: mode.output) {
-            ForEach(OutputMode.allCases) { Text($0.label).tag($0) }
-        }
         Stepper(mode.wrappedValue.maxMinutes == 0 ? "No length limit"
                                                   : "Stop after \(Int(mode.wrappedValue.maxMinutes)) min",
                 value: mode.maxMinutes, in: 0...600, step: 5)
-        Hint("The transcript is also kept in History.")
-
-        DisclosureGroup("Advanced", isExpanded: $advanced) {
-            VStack(alignment: .leading, spacing: 10) {
-                let whisper = mode.wrappedValue.modelFilename.hasSuffix(".bin")
-                Toggle("Skip silence (voice detection)", isOn: mode.vad).disabled(!whisper)
-                if mode.wrappedValue.vad {
-                    Warning("Helps when a recording has long silences. On a quiet or muffled speaker it can mistake speech for silence and drop it.")
-                }
-                Toggle("Accurate decoding (slower)", isOn: mode.accurate).disabled(!whisper)
-                if kind == .room {
-                    Toggle("Filter background noise", isOn: mode.voiceIsolation)
-                    Hint("Off by default: it is tuned for one voice close to the mic and treats a lecturer across the room as noise.")
-                }
-                Toggle("Stop after \(Int(Config.maxSilenceSeconds))s of silence", isOn: mode.stopOnSilence)
-                Toggle("Type as you speak", isOn: mode.live)
-                if mode.wrappedValue.live {
-                    Warning("Re-transcribes the whole recording every half second, so it falls behind on long recordings.")
-                }
-            }
-            .padding(.top, 8)
-        }
-        .font(.system(size: 13))
+        Toggle("Stop after \(Int(Config.maxSilenceSeconds))s of silence", isOn: mode.stopOnSilence)
+        Hint("Everything else — model, language, typing as you speak — is Personal's. Words are typed where your caret was when you started — and held while that app is not in front or no text field has focus, then copied when you stop. The transcript is also kept in History.")
     }
 }
 
@@ -291,15 +253,6 @@ private struct Hint: View {
     init(_ text: String) { self.text = text }
     var body: some View {
         Text(text).font(.system(size: 11.5)).foregroundStyle(Palette.muted)
-            .fixedSize(horizontal: false, vertical: true)
-    }
-}
-
-private struct Warning: View {
-    let text: String
-    init(_ text: String) { self.text = text }
-    var body: some View {
-        Text(text).font(.system(size: 11.5)).foregroundStyle(.orange)
             .fixedSize(horizontal: false, vertical: true)
     }
 }

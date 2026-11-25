@@ -82,55 +82,55 @@ folder and pick it in Settings → Model.
 
 ## Modes
 
-Three ways to record, each on its own shortcut, chosen in the **Modes** tab by
-where the voice is coming from:
+One recorder on three shortcuts, set in the **Modes** tab:
 
 - **Personal** — you, at your Mac: hold a key, speak, the text lands where
-  you're typing. The original app.
-- **Room** — lectures and meeting rooms, through this Mac's microphone.
-- **Call** — Teams, Zoom, Meet, any call or video: what the Mac plays.
+  you're typing. The original app, and where every setting lives.
+- **Room** and **Call** — the same recorder left running for a lecture, a
+  meeting or a call: press to start, press to stop. They record your
+  microphone **and** whatever the Mac is playing, together, so both sides of a
+  call are in the transcript whether or not you wear headphones.
 
-Room and Call are press-to-start, press-to-stop, and can each be switched off.
+Room and Call differ from Personal — and from each other — only in when a
+recording ends by itself. Each can be switched off.
 
 | | Personal | Room (⌥L) | Call (⌥O) |
 |---|---|---|---|
-| Listens to | microphone | microphone | **computer audio** — the call itself, not the room |
-| Model | Settings → Model | Whisper large-v3-turbo | Whisper large-v3-turbo |
-| Language | English (Settings → Model) | detect automatically | detect automatically |
-| Skip silence (VAD) | off | off | off |
-| Decoding | greedy | greedy (beam search is a toggle; it hurt long recordings in testing) | greedy |
-| Background-noise filter | on | off — it treats a lecturer across the room as noise | n/a |
-| Live typing | on | off — it re-transcribes the whole recording every tick | off |
-| Ends by itself | 3 min, or 3 s of silence hands-free | 180 min, never on silence | 180 min, never on silence |
-| When finished | paste at cursor | copy to clipboard, saved in History | copy to clipboard, saved in History |
+| Listens to | microphone | microphone + computer audio | microphone + computer audio |
+| Ends by itself | 3 min, or 3 s of silence hands-free | 180 min, never on silence — both adjustable | 180 min, never on silence — both adjustable |
+| Background-noise filter | on | off — it turns down every other app, the call included | off |
+| Model, language, live typing, when finished | set in Personal | Personal's | Personal's |
 
-**Microphone** is chosen in Room. It records from this Mac's built-in mic
-whatever the system default is, at full input gain for the recording (put back
-afterwards): AirPods and headsets aim their mics at the wearer and filter out
-everyone else, so a professor across the room is removed before any app hears
-it. An iPhone placed nearer the front works too — it shows up in the list.
+**Live typing** in Room and Call goes to the app that was in front when you
+started, and only while it is in front with a text field in focus. An hour of
+a call typed into whatever has focus by then is worse than typing late: the
+meeting's own chat box, or a page with a video on it, where a typed space is
+likely to be play/pause. So start it from where the notes should go. The words wait while
+you are elsewhere and are typed in one go when you come back; if you never do,
+the transcript is on the clipboard and in History. Apps that hide their text
+fields from accessibility (Electron: Obsidian, Slack) always get the clipboard.
+With live typing off, a Room or Call transcript is copied, never pasted.
+
+**Microphone** is always the system default. To record a lecture with AirPods
+in, pick the Mac's own mic in macOS Sound settings first: AirPods and headsets
+aim their mics at the wearer and filter out everyone else, so a professor
+across the room is removed before any app hears it.
 
 **Computer audio** is a Core Audio process tap: Teams, Zoom or a browser tab
 is recorded digitally, before it reaches the speakers — headphones on or off.
-macOS asks once for System Audio Recording.
+macOS asks once for System Audio Recording. Without it Room and Call still
+record the microphone.
 
 **Language** "detect automatically" listens to the first 30 seconds and keeps
 that language for the recording. The bundled `small.en` is English-only; pick
 turbo or Parakeet for anything else. Canary must be told which of its four
 languages it is hearing, or it translates into English.
 
-**Skip silence** runs Silero VAD (bundled, 885 KB) before whisper, so pauses are
-cut instead of decoded — that is where whisper invents "Thank you." Off by
-default: on a quiet, muffled lecture it mistook the lecturer for silence and
-cut her (62.3% WER against 25.3% without it). Turn it on for recordings with
-long real silences. Tuned to threshold 0.35 and 300 ms padding.
-
 With turbo's CoreML encoder beside it in the support folder, the encoder runs
 on the Neural Engine: about twice as fast as Metal on an M5. The first load
 compiles it for the chip and takes about 45 s; after that, under a second.
 
-A mode whose model is missing runs on the dictation model rather than refusing
-to record. Only the transcript is kept, never the audio.
+Only the transcript is kept, never the audio.
 
 ### Models
 

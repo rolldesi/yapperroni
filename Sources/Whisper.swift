@@ -142,3 +142,63 @@ final class Whisper: Transcriber {
         return text
     }
 }
+
+/// Silero voice-activity detection, asked one question: is anyone speaking in
+/// this audio, and from where?
+///
+/// Loudness cannot answer it. Room and Call record the open mic for an hour
+/// with voice processing off, and a quiet room through that mic measures
+/// 0.003–0.015 — above any gate that still lets a lecturer across the room
+/// through (0.0094). Whisper, handed 24 s of that, writes "I'm going to go to
+/// the top of the top of the top", and live mode types it.
+///
+/// Not whisper.cpp's own `vad` option, which cuts the non-speech out of the
+/// audio before decoding and took a quiet lecturer with it (62.3% WER against
+/// 25.3%). This only decides whether a stretch is decoded at all; a stretch
+/// with any speech in it is decoded whole.
+final class SpeechDetector {
+    private var ctx: OpaquePointer?
+
+    init?() {
+        guard let path = Whisper.vadModelPath else { return nil }
+        var p = whisper_vad_default_context_params()
+        // Under a megabyte of weights: the CPU is done before a GPU round
+        // trip would start, and Metal stays whisper's.
+        p.use_gpu = false
+        ctx = whisper_vad_init_from_file_with_params(path, p)
+        if ctx == nil { return nil }
+    }
+
+    deinit { if let ctx { whisper_vad_free(ctx) } }
+
+    /// Speech probability for each ~32 ms frame of `pcm`. Not thread-safe.
+    func probabilities(_ pcm: [Float]) -> [Float] {
+        guard let ctx, !pcm.isEmpty else { return [] }
+        let ok = pcm.withUnsafeBufferPointer { whisper_vad_detect_speech(ctx, $0.baseAddress, Int32($0.count)) }
+        guard ok, let p = whisper_vad_probs(ctx) else { return [] }
+        return Array(UnsafeBufferPointer(start: p, count: Int(whisper_vad_n_probs(ctx))))
+    }
+
+    /// The sample where speech starts in `pcm`, or nil if nobody speaks in it.
+    func speechStart(in pcm: [Float]) -> Int? {
+        let probs = probabilities(pcm)
+        guard let frame = SpeechDetector.firstSpeech(probs) else { return nil }
+        return frame * pcm.count / probs.count
+    }
+
+    static let threshold: Float = 0.5
+    static let minFrames = 3
+
+    /// The first of `run` consecutive frames at or above `threshold`: one
+    /// loud frame is a door or a cough, not a word.
+    /// Static and pure so it can be tested directly — see `--selftest-align`.
+    static func firstSpeech(_ probs: [Float], threshold: Float = SpeechDetector.threshold,
+                            run: Int = SpeechDetector.minFrames) -> Int? {
+        var streak = 0
+        for (i, p) in probs.enumerated() {
+            streak = p >= threshold ? streak + 1 : 0
+            if streak >= run { return i - run + 1 }
+        }
+        return nil
+    }
+}

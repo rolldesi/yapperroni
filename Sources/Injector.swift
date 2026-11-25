@@ -28,6 +28,28 @@ enum Injector {
         }
     }
 
+    /// Roles that take typed text. See `focusedRole`.
+    static let textRoles: Set<String> = [kAXTextAreaRole, kAXTextFieldRole, kAXComboBoxRole, "AXSearchField"]
+
+    /// The accessibility role of whatever has keyboard focus — system-wide,
+    /// or in one app when handed its element.
+    ///
+    /// Synthesised keystrokes go to the focused element whether or not it is
+    /// somewhere to type. A web page with a video on it is not: a browser is
+    /// expected to read the first character of each chunk as a key, every
+    /// chunk after the first starts with a space, and space is play/pause.
+    /// (Reasoned from how WebKit derives a key code, not measured.)
+    static func focusedRole(in root: AXUIElement = AXUIElementCreateSystemWide()) -> String? {
+        // An unresponsive app must not hang ours on the main thread.
+        AXUIElementSetMessagingTimeout(root, 0.3)
+        var focused: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(root, kAXFocusedUIElementAttribute as CFString, &focused) == .success,
+              let focused, CFGetTypeID(focused) == AXUIElementGetTypeID() else { return nil }
+        var role: CFTypeRef?
+        AXUIElementCopyAttributeValue(focused as! AXUIElement, kAXRoleAttribute as CFString, &role)
+        return role as? String
+    }
+
     /// Puts text on the clipboard without touching the focused app.
     static func setClipboard(_ text: String) {
         guard !text.isEmpty else { return }

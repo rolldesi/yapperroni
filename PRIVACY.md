@@ -16,9 +16,9 @@ hands-free lock or a recording mode's shortcut. Nothing is captured when you
 are not actively recording — there is no wake word, no always-on listening, no
 background buffer.
 
-A recording mode set to **Computer audio** records what the Mac is playing — a
-Teams call, a lecture in a browser — instead of the microphone, straight from
-the output mix. macOS asks once for **System Audio Recording**. That audio is
+**Room** and **Call** record what the Mac is playing — a Teams call, a lecture
+in a browser — together with the microphone, straight from the output mix.
+Personal dictation never does. macOS asks once for **System Audio Recording**. That audio is
 treated exactly like the microphone's: held in memory, turned into text on this
 Mac, discarded. It is captured only between the two presses of that mode's
 shortcut.
@@ -122,9 +122,9 @@ whenever it is live.
 
 ## System Audio Recording
 
-Only needed for a recording mode set to Computer audio, and only asked for the
-first time you use one. Revoke it in System Settings → Privacy & Security →
-Screen & System Audio Recording; the mode then records silence and says so.
+Only needed for Room and Call, and only asked for the first time you use one.
+Revoke it in System Settings → Privacy & Security → Screen & System Audio
+Recording; they then record the microphone alone, and the log says so.
 
 ## If you did not build it yourself
 
